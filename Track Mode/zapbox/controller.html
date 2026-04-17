@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Track Mode Controller</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: #111; color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.app { display: flex; flex-direction: column; height: 100%; padding: 16px; gap: 12px; }
+.header { display: flex; align-items: center; justify-content: space-between; }
+.title { font-size: 18px; font-weight: 700; }
+.status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #888; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #555; }
+.dot.on { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+.mode-badge { font-size: 11px; padding: 3px 10px; border-radius: 6px; background: rgba(255,255,255,0.08); color: #888; }
+.mode-badge.xr { background: rgba(168,85,247,0.2); color: #c084fc; }
+.mode-badge.gyro { background: rgba(245,158,11,0.2); color: #fbbf24; }
+.tilt-display { background: rgba(255,255,255,0.05); border: 1px solid #333; border-radius: 12px; padding: 16px; display: flex; justify-content: space-around; text-align: center; }
+.tilt-val { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tilt-label { font-size: 11px; color: #666; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+.direction { flex: 1; display: flex; align-items: center; justify-content: center; }
+.direction-ring { width: 180px; height: 180px; border: 2px solid #333; border-radius: 50%; position: relative; }
+.direction-dot { width: 24px; height: 24px; background: #ef4444; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 16px rgba(239,68,68,0.5); transition: all 0.05s linear; }
+.actions { display: flex; gap: 10px; }
+.action-btn { flex: 1; padding: 18px 8px; border-radius: 12px; border: 1px solid #444; background: rgba(255,255,255,0.06); color: #ccc; font-size: 15px; font-weight: 600; text-align: center; cursor: pointer; transition: all 0.1s; }
+.xr-prompt { background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.3); border-radius: 12px; padding: 14px; text-align: center; }
+.xr-prompt button { margin-top: 10px; padding: 12px 28px; font-size: 15px; font-weight: 700; border: none; border-radius: 10px; background: #a855f7; color: #fff; cursor: pointer; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <span class="title">Track Mode</span>
+    <div class="status">
+      <span id="mode-badge" class="mode-badge">--</span>
+      <span id="status-text">Connecting...</span>
+      <span class="dot" id="status-dot"></span>
+    </div>
+  </div>
+  <div id="xr-prompt" class="xr-prompt hidden">
+    <div>ZapBox controllers detected</div>
+    <button id="btn-start-xr">Start XR Session</button>
+  </div>
+  <div class="tilt-display">
+    <div><div class="tilt-val" id="pitch-val">0</div><div class="tilt-label">Forward</div></div>
+    <div><div class="tilt-val" id="roll-val">0</div><div class="tilt-label">Steer</div></div>
+  </div>
+  <div class="direction">
+    <div class="direction-ring"><div class="direction-dot" id="dir-dot"></div></div>
+  </div>
+  <div class="actions">
+    <button class="action-btn" id="btn-lights">Lights</button>
+    <button class="action-btn" id="btn-turbo">Turbo</button>
+    <button class="action-btn" id="btn-donut">Donut</button>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+
+(function () {
+  "use strict";
+
+  var SEND_HZ = 20;
+  var BACKEND_PORT = 3000;
+  var backendUrl = "http://" + location.hostname + ":" + BACKEND_PORT;
+  var wsTrackUrl = "ws://" + location.hostname + ":" + BACKEND_PORT + "/ws/track";
+
+  // DOM refs
+  var pitchEl = document.getElementById("pitch-val");
+  var rollEl = document.getElementById("roll-val");
+  var dirDot = document.getElementById("dir-dot");
+  var statusText = document.getElementById("status-text");
+  var statusDot = document.getElementById("status-dot");
+  var modeBadge = document.getElementById("mode-badge");
+  var xrPrompt = document.getElementById("xr-prompt");
+  var btnStartXR = document.getElementById("btn-start-xr");
+
+  // State
+  var ws = null;           // controller WS (to copilot zapbox_link)
+  var wsTrack = null;      // backend WS (for track data + pose)
+  var sendTimer = null;
+  var inputMode = "none";
+
+  // Joystick / gyro state
+  var joyForward = 0, joySteer = 0;
+  var pitch = 0, roll = 0, basePitch = null, baseRoll = null;
+
+  // Toggle states
+  var turboOn = false, donutOn = false, lightsOn = false;
+
+  // Button edge detection
+  var prevBtnA = false, prevBtnB = false;
+  var prevLeftA = false, prevLeftMenu = false, prevLeftB = false;
+
+  // App mode: "drive" | "edit" | "race"
+  var appMode = "drive";
+
+  // Track drawing state
+  var trackPoints = [];       // [{x, z}, ...]
+  var trackMeshes = [];       // THREE meshes for track visualization
+  var trackBoundaryMeshes = [];
+  var trackHalfWidth = 0.15;
+  var isDrawing = false;
+  var lastDrawPoint = null;
+  var trackValidated = false;
+
+  // Calibration state
+  var calibStep = 0;          // 0=none, 1=waiting position, 2=waiting heading
+  var calibPosition = null;
+  var calibHeading = null;
+
+  // Race visualization
+  var carMarker = null;       // THREE mesh showing car position
+  var latestPose = null;
+
+  // Camera feed
+  var camScreenMesh, camScreenTexture, camScreenCanvas, camScreenCtx;
+  var camFeedRunning = false;
+  var camStreamSource = "none";
+  var camStreamVideo = null;
+  var camRtcPc = null;
+  var camFrameCount = 0;
+  var camPiIp = null, camPiPort = 1984;
+  var camScreenPlaced = false;
+
+  // 3D
+  var renderer, scene, camera;
+  var xrSession = null, xrRefSpace = null;
+  var controllerMarkers = {};
+
+  // ---- WebSocket to copilot (driving) ----
+  var wsUrl = "ws://" + location.host + "/ws";
+
+  function connectWS() {
+    if (ws) { ws.close(); ws = null; }
+    setStatus("connecting");
+    ws = new WebSocket(wsUrl);
+    ws.onopen = function () { setStatus("connected"); startSending(); };
+    ws.onclose = function () { setStatus("disconnected"); stopSending(); setTimeout(connectWS, 2000); };
+    ws.onerror = function () {};
+  }
+
+  function setStatus(s) {
+    statusText.textContent = s === "connected" ? "Connected" : s === "connecting" ? "Connecting..." : "Reconnecting...";
+    statusDot.className = s === "connected" ? "dot on" : "dot";
+  }
+
+  function startSending() {
+    stopSending();
+    sendTimer = setInterval(function () {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (appMode !== "drive") return;
+      var payload;
+      if (inputMode === "webxr") {
+        payload = { type: "controller_state", joystick: { forward: joyForward, steer: joySteer }, toggles: { turbo: turboOn, donut: donutOn, lights: lightsOn } };
+      } else {
+        payload = { type: "controller_state", rotation: { pitch: pitch, yaw: 0, roll: roll }, buttons: { turbo: turboOn, donut: donutOn, lights: lightsOn } };
+      }
+      ws.send(JSON.stringify(payload));
+    }, 1000 / SEND_HZ);
+  }
+
+  function stopSending() { if (sendTimer) { clearInterval(sendTimer); sendTimer = null; } }
+
+  // ---- WebSocket to backend (track) ----
+  function connectTrackWS() {
+    if (wsTrack) { wsTrack.close(); wsTrack = null; }
+    wsTrack = new WebSocket(wsTrackUrl);
+    wsTrack.onopen = function () { console.log("[TRACK WS] Connected"); };
+    wsTrack.onclose = function () { setTimeout(connectTrackWS, 3000); };
+    wsTrack.onmessage = function (ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === "pose") {
+          latestPose = msg.pose;
+          updateCarMarker(msg.pose);
+        } else if (msg.type === "validation_result") {
+          handleValidationResult(msg);
+        } else if (msg.type === "calibrated") {
+          onCalibrated();
+        } else if (msg.type === "race_started") {
+          appMode = "race";
+          updateModeHUD();
+        } else if (msg.type === "race_stopped") {
+          appMode = "drive";
+          updateModeHUD();
+        }
+      } catch (e) {}
+    };
+  }
+
+  // ---- Mode management ----
+  function cycleMode() {
+    if (appMode === "drive") {
+      appMode = "edit";
+      trackPoints = [];
+      clearTrackMeshes();
+      trackValidated = false;
+      calibStep = 0;
+    } else if (appMode === "edit") {
+      appMode = "drive";
+    } else if (appMode === "race") {
+      // Stop race and go back to drive
+      if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+        wsTrack.send(JSON.stringify({ type: "stop_race" }));
+      }
+      appMode = "drive";
+    }
+    updateModeHUD();
+    console.log("[MODE] " + appMode);
+  }
+
+  function updateModeHUD() {
+    // Will be drawn on the 3D HUD
+  }
+
+  // ---- 3D HUD ----
+  var HUD_W = 300, HUD_H = 200;
+  var hudCanvas, hudCtx, hudTexture, hudMesh;
+
+  function createHud() {
+    hudCanvas = document.createElement("canvas");
+    hudCanvas.width = HUD_W; hudCanvas.height = HUD_H;
+    hudCtx = hudCanvas.getContext("2d");
+    hudTexture = new THREE.CanvasTexture(hudCanvas);
+    hudTexture.minFilter = THREE.LinearFilter;
+    var mat = new THREE.MeshBasicMaterial({ map: hudTexture, transparent: true, depthTest: false });
+    hudMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.12), mat);
+    hudMesh.renderOrder = 9999;
+    hudMesh.visible = false;
+    scene.add(hudMesh);
+    drawHud();
+  }
+
+  function drawHud() {
+    if (!hudCtx) return;
+    var ctx = hudCtx;
+    ctx.clearRect(0, 0, HUD_W, HUD_H);
+
+    ctx.fillStyle = "rgba(0,0,0,0.7)";
+    roundRect(ctx, 0, 0, HUD_W, HUD_H, 12);
+    ctx.fill();
+
+    // Mode indicator
+    var modeColors = { drive: "#22c55e", edit: "#f59e0b", race: "#ef4444" };
+    ctx.fillStyle = modeColors[appMode] || "#888";
+    ctx.font = "bold 18px sans-serif";
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+    ctx.fillText("MODE: " + appMode.toUpperCase(), 12, 12);
+
+    ctx.font = "13px sans-serif";
+    ctx.fillStyle = "#aaa";
+    var y = 40;
+
+    if (appMode === "drive") {
+      ctx.fillText("L-Menu: switch to EDIT", 12, y);
+      ctx.fillText("Joy: drive car", 12, y + 20);
+    } else if (appMode === "edit") {
+      ctx.fillText("Trigger: draw track on floor", 12, y);
+      ctx.fillText("R-A: validate track", 12, y + 20);
+      ctx.fillText("R-B: clear track", 12, y + 40);
+      ctx.fillText("Joy: adjust width (" + (trackHalfWidth * 200).toFixed(0) + "cm)", 12, y + 60);
+      ctx.fillText("Points: " + trackPoints.length, 12, y + 80);
+      if (trackValidated) {
+        ctx.fillStyle = "#22c55e";
+        ctx.fillText("VALIDATED - L-Menu to calibrate", 12, y + 100);
+      }
+    } else if (appMode === "race") {
+      ctx.fillText("Racing! L-Menu: stop", 12, y);
+      if (latestPose) {
+        ctx.fillText("Conf: " + (latestPose.confidence * 100).toFixed(0) + "%", 12, y + 20);
+        ctx.fillText("Pos: " + latestPose.x.toFixed(2) + ", " + latestPose.z.toFixed(2), 12, y + 40);
+      }
+    }
+
+    if (calibStep === 1) {
+      ctx.fillStyle = "#f59e0b";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("Point at car, press TRIGGER", 12, HUD_H - 40);
+    } else if (calibStep === 2) {
+      ctx.fillStyle = "#f59e0b";
+      ctx.font = "bold 14px sans-serif";
+      ctx.fillText("Point car's FORWARD dir, TRIGGER", 12, HUD_H - 40);
+    }
+
+    hudTexture.needsUpdate = true;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function positionHud(frame, sources) {
+    if (!hudMesh) return;
+    var xrCam = renderer.xr.getCamera();
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i];
+      if (src.handedness !== "right") continue;
+      var space = src.gripSpace || src.targetRaySpace;
+      if (!space) continue;
+      var pose = frame.getPose(space, xrRefSpace);
+      if (!pose) continue;
+      var t = pose.transform.position;
+      var q = pose.transform.orientation;
+      var quat = new THREE.Quaternion(q.x, q.y, q.z, q.w);
+      var offset = new THREE.Vector3(0.08, 0.12, -0.08).applyQuaternion(quat);
+      hudMesh.position.set(t.x + offset.x, t.y + offset.y, t.z + offset.z);
+      hudMesh.lookAt(xrCam.position);
+      hudMesh.visible = true;
+      return;
+    }
+    hudMesh.visible = false;
+  }
+
+  // ---- Track drawing (edit mode) ----
+  function getFloorPoint(frame, sources) {
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i];
+      if (src.handedness !== "right") continue;
+      var space = src.targetRaySpace;
+      if (!space) continue;
+      var pose = frame.getPose(space, xrRefSpace);
+      if (!pose) continue;
+
+      var origin = new THREE.Vector3(
+        pose.transform.position.x,
+        pose.transform.position.y,
+        pose.transform.position.z
+      );
+      var quat = new THREE.Quaternion(
+        pose.transform.orientation.x,
+        pose.transform.orientation.y,
+        pose.transform.orientation.z,
+        pose.transform.orientation.w
+      );
+      var dir = new THREE.Vector3(0, 0, -1).applyQuaternion(quat).normalize();
+
+      // Intersect with y=0 plane
+      if (Math.abs(dir.y) < 0.001) return null;
+      var t = -origin.y / dir.y;
+      if (t < 0 || t > 10) return null;
+
+      return {
+        x: origin.x + dir.x * t,
+        z: origin.z + dir.z * t
+      };
+    }
+    return null;
+  }
+
+  function addTrackPoint(pt) {
+    if (lastDrawPoint) {
+      var dx = pt.x - lastDrawPoint.x;
+      var dz = pt.z - lastDrawPoint.z;
+      var dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 0.05) return; // min 5cm between points
+    }
+    trackPoints.push(pt);
+    lastDrawPoint = pt;
+
+    // Draw segment
+    if (trackPoints.length >= 2) {
+      var prev = trackPoints[trackPoints.length - 2];
+      addTrackSegmentMesh(prev, pt);
+    }
+
+    // Check if close to start (for auto-close visual hint)
+    if (trackPoints.length > 10) {
+      var start = trackPoints[0];
+      var dx2 = pt.x - start.x;
+      var dz2 = pt.z - start.z;
+      var distToStart = Math.sqrt(dx2 * dx2 + dz2 * dz2);
+      if (distToStart < 0.05) {
+        // Close enough — auto-close on trigger release
+      }
+    }
+  }
+
+  function addTrackSegmentMesh(a, b) {
+    var geo = new THREE.BufferGeometry();
+    var verts = new Float32Array([a.x, 0.005, a.z, b.x, 0.005, b.z]);
+    geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+    var mat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 });
+    var line = new THREE.Line(geo, mat);
+    scene.add(line);
+    trackMeshes.push(line);
+  }
+
+  function clearTrackMeshes() {
+    for (var i = 0; i < trackMeshes.length; i++) {
+      scene.remove(trackMeshes[i]);
+      trackMeshes[i].geometry.dispose();
+    }
+    trackMeshes = [];
+    for (var j = 0; j < trackBoundaryMeshes.length; j++) {
+      scene.remove(trackBoundaryMeshes[j]);
+      trackBoundaryMeshes[j].geometry.dispose();
+    }
+    trackBoundaryMeshes = [];
+    trackPoints = [];
+    lastDrawPoint = null;
+  }
+
+  function buildBoundaryVisuals(centerline, halfWidth) {
+    // Remove old boundaries
+    for (var j = 0; j < trackBoundaryMeshes.length; j++) {
+      scene.remove(trackBoundaryMeshes[j]);
+      trackBoundaryMeshes[j].geometry.dispose();
+    }
+    trackBoundaryMeshes = [];
+
+    if (!centerline || centerline.length < 2) return;
+
+    var innerPts = [];
+    var outerPts = [];
+
+    for (var i = 0; i < centerline.length; i++) {
+      var curr = centerline[i];
+      var next = centerline[(i + 1) % centerline.length];
+      var dx = next.x - curr.x;
+      var dz = next.z - curr.z;
+      var len = Math.sqrt(dx * dx + dz * dz);
+      if (len < 0.001) continue;
+      // Normal (perpendicular)
+      var nx = -dz / len;
+      var nz = dx / len;
+      innerPts.push({ x: curr.x + nx * halfWidth, z: curr.z + nz * halfWidth });
+      outerPts.push({ x: curr.x - nx * halfWidth, z: curr.z - nz * halfWidth });
+    }
+
+    function makeLine(pts, color) {
+      if (pts.length < 2) return;
+      var verts = [];
+      for (var k = 0; k < pts.length; k++) {
+        verts.push(pts[k].x, 0.003, pts[k].z);
+      }
+      // Close
+      verts.push(pts[0].x, 0.003, pts[0].z);
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
+      var mat = new THREE.LineBasicMaterial({ color: color, linewidth: 1, transparent: true, opacity: 0.5 });
+      var line = new THREE.Line(geo, mat);
+      scene.add(line);
+      trackBoundaryMeshes.push(line);
+    }
+
+    makeLine(innerPts, 0x22c55e);
+    makeLine(outerPts, 0x22c55e);
+  }
+
+  function handleValidationResult(msg) {
+    if (msg.valid) {
+      trackValidated = true;
+      calibStep = 1;
+      console.log("[TRACK] Validated! Starting calibration...");
+      // Fetch smoothed centerline for boundary display
+      fetch(backendUrl + "/track/data")
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (data.centerline) {
+            buildBoundaryVisuals(data.centerline, data.half_width);
+          }
+        })
+        .catch(function () {});
+    } else {
+      trackValidated = false;
+      console.log("[TRACK] Validation failed:", msg.errors);
+    }
+    drawHud();
+  }
+
+  function onCalibrated() {
+    calibStep = 0;
+    console.log("[CALIB] Calibrated! Starting race...");
+    if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+      wsTrack.send(JSON.stringify({ type: "start_race" }));
+    }
+  }
+
+  // ---- Car marker (race mode) ----
+  function createCarMarker() {
+    var geo = new THREE.ConeGeometry(0.03, 0.06, 8);
+    geo.rotateX(Math.PI / 2);
+    var mat = new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xef4444, emissiveIntensity: 0.5 });
+    carMarker = new THREE.Mesh(geo, mat);
+    carMarker.position.set(0, 0.04, 0);
+    carMarker.visible = false;
+    scene.add(carMarker);
+  }
+
+  function updateCarMarker(pose) {
+    if (!carMarker || appMode !== "race") return;
+    carMarker.position.set(pose.x, 0.04, pose.z);
+    carMarker.rotation.y = -pose.heading + Math.PI / 2;
+    carMarker.visible = true;
+  }
+
+  // ---- Camera screen ----
+  function createCameraScreen() {
+    var W = 640, H = 360;
+    camScreenCanvas = document.createElement("canvas");
+    camScreenCanvas.width = W; camScreenCanvas.height = H;
+    camScreenCtx = camScreenCanvas.getContext("2d");
+    camScreenCtx.fillStyle = "#111"; camScreenCtx.fillRect(0, 0, W, H);
+    camScreenCtx.fillStyle = "#666"; camScreenCtx.font = "20px sans-serif";
+    camScreenCtx.textAlign = "center"; camScreenCtx.textBaseline = "middle";
+    camScreenCtx.fillText("Connecting camera...", W / 2, H / 2);
+
+    camScreenTexture = new THREE.CanvasTexture(camScreenCanvas);
+    camScreenTexture.minFilter = THREE.LinearFilter;
+    var geo = new THREE.PlaneGeometry(1.0, 0.5625);
+    var mat = new THREE.MeshBasicMaterial({ map: camScreenTexture, side: THREE.DoubleSide });
+    camScreenMesh = new THREE.Mesh(geo, mat);
+    camScreenMesh.renderOrder = 100;
+    scene.add(camScreenMesh);
+
+    camFeedRunning = true;
+
+    // Get camera info and try WebRTC
+    fetch(backendUrl + "/camera/info", { mode: "cors" })
+      .then(function (r) { return r.json(); })
+      .then(function (info) {
+        if (info.source === "pi" && info.snapshot_url) {
+          camPiIp = info.pi_ip;
+          camPiPort = info.go2rtc_port || 1984;
+          tryWebRtcStream(info);
+        } else {
+          startSnapshotFallback();
+        }
+      })
+      .catch(function () { startSnapshotFallback(); });
+  }
+
+  function tryWebRtcStream(info) {
+    if (!camPiIp || typeof RTCPeerConnection === "undefined") {
+      startSnapshotFallback();
+      return;
+    }
+    var pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    camRtcPc = pc;
+    var done = false;
+
+    pc.addTransceiver("video", { direction: "recvonly" });
+
+    pc.ontrack = function (ev) {
+      var vid = document.createElement("video");
+      vid.autoplay = true; vid.muted = true; vid.playsInline = true;
+      vid.style.cssText = "position:fixed;bottom:0;left:0;width:1px;height:1px;z-index:-1;";
+      document.body.appendChild(vid);
+      vid.srcObject = ev.streams[0];
+      vid.play().catch(function () {});
+      camStreamVideo = vid;
+      camStreamSource = "webrtc";
+      done = true;
+    };
+
+    pc.oniceconnectionstatechange = function () {
+      if ((pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") && !done) {
+        if (camRtcPc) { camRtcPc.close(); camRtcPc = null; }
+        startSnapshotFallback();
+      }
+    };
+
+    pc.createOffer().then(function (offer) {
+      return pc.setLocalDescription(offer);
+    }).then(function () {
+      return new Promise(function (resolve) {
+        if (pc.iceGatheringState === "complete") resolve();
+        else {
+          pc.addEventListener("icegatheringstatechange", function check() {
+            if (pc.iceGatheringState === "complete") { pc.removeEventListener("icegatheringstatechange", check); resolve(); }
+          });
+          setTimeout(resolve, 3000);
+        }
+      });
+    }).then(function () {
+      if (done) return;
+      return fetch("http://" + camPiIp + ":" + camPiPort + "/api/webrtc?src=camera", {
+        method: "POST", mode: "cors",
+        headers: { "Content-Type": "application/sdp" },
+        body: pc.localDescription.sdp,
+      });
+    }).then(function (resp) {
+      if (!resp || !resp.ok) throw new Error("HTTP " + (resp ? resp.status : "?"));
+      return resp.text();
+    }).then(function (sdp) {
+      if (done) return;
+      return pc.setRemoteDescription({ type: "answer", sdp: sdp });
+    }).catch(function () {
+      if (!done) { if (camRtcPc) { camRtcPc.close(); camRtcPc = null; } startSnapshotFallback(); }
+    });
+
+    setTimeout(function () {
+      if (!done) { if (camRtcPc) { camRtcPc.close(); camRtcPc = null; } startSnapshotFallback(); }
+    }, 12000);
+  }
+
+  function startSnapshotFallback() {
+    if (camStreamSource !== "none") return;
+    camStreamSource = "snapshot";
+    fetchSnapshot();
+  }
+
+  function fetchSnapshot() {
+    if (!camFeedRunning || camStreamSource !== "snapshot") return;
+    fetch(backendUrl + "/camera/snapshot?t=" + Date.now(), { mode: "cors" })
+      .then(function (r) { if (!r.ok) throw new Error(); return r.blob(); })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var img = new Image();
+        img.onload = function () {
+          camScreenCtx.drawImage(img, 0, 0, camScreenCanvas.width, camScreenCanvas.height);
+          camScreenTexture.needsUpdate = true;
+          URL.revokeObjectURL(url);
+          if (camFeedRunning) fetchSnapshot();
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); if (camFeedRunning) setTimeout(fetchSnapshot, 500); };
+        img.src = url;
+      })
+      .catch(function () { if (camFeedRunning) setTimeout(fetchSnapshot, 1000); });
+  }
+
+  function updateCameraTexture() {
+    if (camStreamSource !== "webrtc" || !camStreamVideo) return;
+    try {
+      camScreenCtx.save();
+      camScreenCtx.translate(camScreenCanvas.width, camScreenCanvas.height);
+      camScreenCtx.rotate(Math.PI);
+      camScreenCtx.drawImage(camStreamVideo, 0, 0, camScreenCanvas.width, camScreenCanvas.height);
+      camScreenCtx.restore();
+      camScreenTexture.needsUpdate = true;
+    } catch (e) {}
+  }
+
+  function positionCameraScreen(frame) {
+    if (!camScreenMesh) return;
+    var xrCam = renderer.xr.getCamera();
+    if (!camScreenPlaced) {
+      var camPos = new THREE.Vector3();
+      var camDir = new THREE.Vector3(0, 0, -1);
+      xrCam.getWorldPosition(camPos);
+      xrCam.getWorldDirection(camDir);
+      camDir.y = 0; camDir.normalize();
+      var screenPos = camPos.clone().add(camDir.multiplyScalar(1.2));
+      screenPos.y = camPos.y - 0.05;
+      camScreenMesh.position.copy(screenPos);
+      camScreenPlaced = true;
+    }
+    var cp = new THREE.Vector3();
+    xrCam.getWorldPosition(cp);
+    camScreenMesh.lookAt(cp);
+  }
+
+  // ---- 2D UI ----
+  function updateVisuals() {
+    if (inputMode === "webxr") {
+      pitchEl.textContent = joyForward.toFixed(1);
+      rollEl.textContent = joySteer.toFixed(1);
+    } else {
+      pitchEl.textContent = Math.round(pitch);
+      rollEl.textContent = Math.round(roll);
+    }
+  }
+
+  // ---- THREE.js ----
+  function initThree() {
+    renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    renderer.domElement.style.position = "fixed";
+    renderer.domElement.style.top = "0"; renderer.domElement.style.left = "0";
+    renderer.domElement.style.zIndex = "-1";
+    document.body.appendChild(renderer.domElement);
+
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    var dl = new THREE.DirectionalLight(0xffffff, 1.0);
+    dl.position.set(1, 2, 1);
+    scene.add(dl);
+  }
+
+  function createControllerMarker(hand) {
+    var group = new THREE.Group();
+    var col = hand === "left" ? 0x22c55e : 0xef4444;
+    group.add(new THREE.Mesh(
+      new THREE.SphereGeometry(0.015, 16, 16),
+      new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.5 })
+    ));
+    var rayGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.5, 8);
+    rayGeo.rotateX(-Math.PI / 2); rayGeo.translate(0, 0, -0.25);
+    group.add(new THREE.Mesh(rayGeo, new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.4, transparent: true, opacity: 0.7 })));
+    scene.add(group);
+    return group;
+  }
+
+  function getOrCreateMarker(hand) {
+    if (!controllerMarkers[hand]) controllerMarkers[hand] = createControllerMarker(hand);
+    return controllerMarkers[hand];
+  }
+
+  // ---- XR input ----
+  function readXRInputs(sources, frame) {
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i];
+      if (src.handedness === "left" && src.gamepad) {
+        var laxes = src.gamepad.axes;
+        joyForward = -(laxes.length >= 4 ? laxes[3] : laxes.length >= 2 ? laxes[1] : 0);
+        var lbtns = src.gamepad.buttons;
+
+        // Left Menu (index 4) -> cycle mode / start calibration sequence
+        var leftMenu = lbtns.length > 4 && lbtns[4].pressed;
+        if (leftMenu && !prevLeftMenu) {
+          if (appMode === "edit" && trackValidated && calibStep === 0) {
+            calibStep = 1;
+            console.log("[CALIB] Place car at start, point at it, press TRIGGER");
+          } else if (calibStep > 0) {
+            calibStep = 0; // cancel calibration
+          } else {
+            cycleMode();
+          }
+          drawHud();
+        }
+        prevLeftMenu = leftMenu;
+
+        // Left A (index 5) -> unused for now
+        var leftA = lbtns.length > 5 && lbtns[5].pressed;
+        prevLeftA = leftA;
+
+        // Left B (index 6) -> unused
+        var leftB = lbtns.length > 6 && lbtns[6].pressed;
+        prevLeftB = leftB;
+      }
+
+      if (src.handedness === "right" && src.gamepad) {
+        var raxes = src.gamepad.axes;
+        joySteer = raxes.length >= 4 ? raxes[2] : raxes.length >= 2 ? raxes[0] : 0;
+        var btns = src.gamepad.buttons;
+
+        var trigger = btns.length > 0 && btns[0].pressed;
+        var btnA = btns.length > 5 && btns[5].pressed;
+        var btnB = btns.length > 4 && btns[4].pressed;
+
+        // Edit mode: trigger draws, A validates, B clears
+        if (appMode === "edit" && calibStep === 0) {
+          if (trigger) {
+            var fp = getFloorPoint(frame, sources);
+            if (fp) {
+              addTrackPoint(fp);
+              isDrawing = true;
+            }
+          } else if (isDrawing) {
+            // Trigger released — finalize drawing segment
+            isDrawing = false;
+            lastDrawPoint = null;
+          }
+
+          if (btnA && !prevBtnA && trackPoints.length >= 4) {
+            // Validate
+            if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+              wsTrack.send(JSON.stringify({ type: "track_points", points: trackPoints }));
+              wsTrack.send(JSON.stringify({ type: "track_set_width", half_width: trackHalfWidth }));
+              wsTrack.send(JSON.stringify({ type: "track_validate" }));
+            }
+          }
+
+          if (btnB && !prevBtnB) {
+            clearTrackMeshes();
+            trackValidated = false;
+            if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+              wsTrack.send(JSON.stringify({ type: "track_clear" }));
+            }
+            drawHud();
+          }
+
+          // Joystick adjusts track width
+          var joyY = raxes.length >= 4 ? raxes[3] : 0;
+          if (Math.abs(joyY) > 0.3) {
+            trackHalfWidth = Math.max(0.05, Math.min(0.50, trackHalfWidth - joyY * 0.002));
+            drawHud();
+          }
+        }
+
+        // Calibration mode: trigger to set position / heading
+        if (calibStep > 0 && trigger && !prevBtnA) {
+          var fp2 = getFloorPoint(frame, sources);
+          if (fp2) {
+            if (calibStep === 1) {
+              calibPosition = fp2;
+              calibStep = 2;
+              console.log("[CALIB] Position set:", fp2.x.toFixed(3), fp2.z.toFixed(3));
+            } else if (calibStep === 2 && calibPosition) {
+              var dx = fp2.x - calibPosition.x;
+              var dz = fp2.z - calibPosition.z;
+              var heading = Math.atan2(dx, dz);
+              calibHeading = heading;
+              console.log("[CALIB] Heading set:", (heading * 180 / Math.PI).toFixed(1), "deg");
+              // Send calibration
+              if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+                wsTrack.send(JSON.stringify({
+                  type: "calibrate",
+                  x: calibPosition.x,
+                  z: calibPosition.z,
+                  heading: heading
+                }));
+              }
+              calibStep = 0;
+            }
+            drawHud();
+          }
+        }
+
+        // Drive mode: A=turbo, B=donut toggle
+        if (appMode === "drive") {
+          if (btnA && !prevBtnA) { turboOn = !turboOn; }
+          if (btnB && !prevBtnB) { donutOn = !donutOn; }
+        }
+
+        // Race mode: any joystick input stops race
+        if (appMode === "race") {
+          if (Math.abs(joyForward) > 0.3 || Math.abs(joySteer) > 0.3) {
+            if (wsTrack && wsTrack.readyState === WebSocket.OPEN) {
+              wsTrack.send(JSON.stringify({ type: "stop_race" }));
+            }
+            appMode = "drive";
+            drawHud();
+          }
+        }
+
+        prevBtnA = btnA;
+        prevBtnB = btnB;
+      }
+    }
+  }
+
+  // ---- Screen grab ----
+  var grabbing = false, grabOffset = new THREE.Vector3();
+  function handleScreenGrab(sources, frame) {
+    if (!camScreenMesh || !xrRefSpace) return;
+    var anyTrigger = false;
+    if (appMode !== "drive") return; // only grab in drive mode
+
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i];
+      if (!src.gamepad) continue;
+      var trigDown = src.gamepad.buttons.length > 0 && src.gamepad.buttons[0].pressed;
+      if (!trigDown) continue;
+      var space = src.gripSpace || src.targetRaySpace;
+      if (!space) continue;
+      var pose = frame.getPose(space, xrRefSpace);
+      if (!pose) continue;
+      var cp = new THREE.Vector3(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+      if (!grabbing) { grabbing = true; grabOffset.copy(camScreenMesh.position).sub(cp); }
+      camScreenMesh.position.copy(cp).add(grabOffset);
+      var xrCam = renderer.xr.getCamera();
+      var ep = new THREE.Vector3(); xrCam.getWorldPosition(ep);
+      camScreenMesh.lookAt(ep);
+      anyTrigger = true;
+      break;
+    }
+    if (!anyTrigger && grabbing) grabbing = false;
+  }
+
+  // ---- XR frame loop ----
+  function onXRFrame(time, frame) {
+    if (!xrSession || !frame) return;
+    var sources = xrSession.inputSources;
+
+    for (var i = 0; i < sources.length; i++) {
+      var src = sources[i];
+      var space = src.gripSpace || src.targetRaySpace;
+      if (!space) continue;
+      var pose = frame.getPose(space, xrRefSpace);
+      if (!pose) continue;
+      var hand = src.handedness || ("ctrl" + i);
+      var marker = getOrCreateMarker(hand);
+      marker.position.set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+      marker.quaternion.set(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w);
+    }
+
+    readXRInputs(sources, frame);
+    if (appMode === "drive") handleScreenGrab(sources, frame);
+    positionHud(frame, sources);
+    if (!grabbing) positionCameraScreen(frame);
+    updateCameraTexture();
+    updateVisuals();
+    drawHud();
+    renderer.render(scene, camera);
+  }
+
+  // ---- XR session ----
+  function checkWebXR() {
+    if (!navigator.xr) return;
+    navigator.xr.isSessionSupported("immersive-ar").then(function (ok) {
+      if (!ok) {
+        navigator.xr.isSessionSupported("immersive-vr").then(function (ok2) {
+          if (ok2) showXRPrompt("immersive-vr");
+        });
+      } else {
+        showXRPrompt("immersive-ar");
+      }
+    });
+  }
+
+  function showXRPrompt(type) {
+    xrPrompt.classList.remove("hidden");
+    btnStartXR.onclick = function () { startXR(type); };
+  }
+
+  function startXR(type) {
+    try { initThree(); } catch (e) { alert("Three.js init failed: " + e.message); return; }
+    navigator.xr.requestSession(type, { optionalFeatures: ["local-floor", "hand-tracking"] })
+      .then(function (session) {
+        xrSession = session;
+        inputMode = "webxr";
+        modeBadge.textContent = "WebXR";
+        modeBadge.className = "mode-badge xr";
+        xrPrompt.classList.add("hidden");
+        renderer.xr.setSession(session);
+
+        createHud();
+        createCarMarker();
+        createCameraScreen();
+
+        session.requestReferenceSpace("local-floor")
+          .then(function (rs) { xrRefSpace = rs; renderer.setAnimationLoop(onXRFrame); })
+          .catch(function () {
+            session.requestReferenceSpace("local")
+              .then(function (rs) { xrRefSpace = rs; renderer.setAnimationLoop(onXRFrame); });
+          });
+
+        session.addEventListener("end", function () {
+          xrSession = null; xrRefSpace = null; inputMode = "none";
+          renderer.setAnimationLoop(null);
+          camFeedRunning = false;
+          startGyroFallback();
+        });
+      })
+      .catch(function () { startGyroFallback(); });
+  }
+
+  // ---- Gyro fallback ----
+  function startGyroFallback() {
+    if (inputMode === "webxr") return;
+    inputMode = "gyro";
+    modeBadge.textContent = "Gyro"; modeBadge.className = "mode-badge gyro";
+    if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+      DeviceOrientationEvent.requestPermission().then(function (s) { if (s === "granted") attachGyro(); }).catch(attachGyro);
+    } else { attachGyro(); }
+  }
+
+  function attachGyro() {
+    window.addEventListener("deviceorientation", function (e) {
+      var rp = e.beta || 0, rr = e.gamma || 0;
+      if (basePitch === null) { basePitch = rp; baseRoll = rr; }
+      pitch = Math.max(-90, Math.min(90, rp - basePitch));
+      roll = Math.max(-90, Math.min(90, rr - baseRoll));
+      updateVisuals();
+    });
+  }
+
+  // ---- On-screen buttons (non-XR) ----
+  document.getElementById("btn-lights").addEventListener("click", function () { lightsOn = !lightsOn; });
+  document.getElementById("btn-turbo").addEventListener("click", function () { turboOn = !turboOn; });
+  document.getElementById("btn-donut").addEventListener("click", function () { donutOn = !donutOn; });
+
+  // ---- Boot ----
+  connectWS();
+  connectTrackWS();
+  checkWebXR();
+  setTimeout(function () { if (inputMode === "none") startGyroFallback(); }, 1500);
+
+})();
+</script>
+</body>
+</html>

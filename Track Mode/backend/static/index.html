@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Track Mode — Monitor</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="main-ui" class="overlay">
+    <div class="top-bar">
+      <div class="top-left"><span class="logo">Track Mode</span></div>
+      <div class="top-right">
+        <span id="cam-status" class="status-dot dot-off" title="Camera"></span>
+        <span class="status-label">Cam</span>
+        <span id="car-status-dot" class="status-dot dot-off" title="Car"></span>
+        <span class="status-label">Car</span>
+        <span id="vo-status-dot" class="status-dot dot-off" title="VO"></span>
+        <span class="status-label">VO</span>
+        <span id="battery-display" class="badge hidden"></span>
+      </div>
+    </div>
+    <div id="error-banner" class="error-banner hidden"></div>
+    <div class="center-panel">
+      <div class="panel-section">
+        <h2>Car</h2>
+        <div class="btn-row">
+          <button id="btn-scan" class="btn btn-green">Scan for Cars</button>
+        </div>
+        <div id="scan-results" class="scan-results hidden"></div>
+        <div id="car-connected-info" class="car-info hidden">
+          <span id="connected-car-name"></span>
+          <button id="btn-disconnect-car" class="btn btn-sm btn-outline">Disconnect</button>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h2>Visual Odometry</h2>
+        <div class="btn-row">
+          <button id="btn-vo-start" class="btn btn-green">Start VO</button>
+          <button id="btn-vo-stop" class="btn btn-sm btn-outline">Stop VO</button>
+        </div>
+        <div id="vo-info" class="car-info" style="margin-top:8px;">
+          <span id="vo-text">Stopped</span>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h2>Race</h2>
+        <div id="race-info" class="car-info">
+          <span id="race-text">No track</span>
+        </div>
+      </div>
+    </div>
+    <div id="drive-hud" class="bottom-hud hidden">
+      <div class="wasd-group">
+        <div class="wasd-row"><div class="key" id="key-w" data-key="w">W</div></div>
+        <div class="wasd-row">
+          <div class="key" id="key-a" data-key="a">A</div>
+          <div class="key" id="key-s" data-key="s">S</div>
+          <div class="key" id="key-d" data-key="d">D</div>
+        </div>
+      </div>
+      <div class="hints"><p>WASD drive</p></div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

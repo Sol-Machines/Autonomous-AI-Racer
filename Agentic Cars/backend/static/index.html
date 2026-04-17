@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Agentic Cars</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ======= VIDEO LAYER ======= -->
+  <video id="camera-feed" autoplay playsinline muted class="hidden"></video>
+  <img id="camera-feed-img" alt="Camera feed" class="hidden" />
+
+  <!-- ======= MAIN UI ======= -->
+  <div id="main-ui" class="overlay">
+
+    <!-- Top Bar -->
+    <div class="top-bar">
+      <div class="top-left">
+        <span class="logo">🚗 Agentic Cars</span>
+      </div>
+      <div class="top-right">
+        <span id="cam-status" class="status-dot dot-off" title="Camera"></span>
+        <span class="status-label">Cam</span>
+        <span id="car-status-dot" class="status-dot dot-off" title="Car"></span>
+        <span class="status-label">Car</span>
+        <span id="battery-display" class="badge hidden">🔋 --%</span>
+        <span id="car-name" class="badge hidden"></span>
+      </div>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="error-banner hidden"></div>
+
+    <!-- Center Content -->
+    <div class="center-panel">
+
+      <!-- Car Section -->
+      <div class="panel-section">
+        <h2>Car Control</h2>
+        <div class="btn-row">
+          <button id="btn-scan" class="btn btn-green">Scan for Cars</button>
+        </div>
+        <div id="scan-results" class="scan-results hidden"></div>
+        <div id="car-connected-info" class="car-info hidden">
+          <span id="connected-car-name"></span>
+          <button id="btn-disconnect-car" class="btn btn-sm btn-outline">Disconnect</button>
+        </div>
+      </div>
+
+      <!-- Camera Section -->
+      <div class="panel-section">
+        <h2>Camera</h2>
+        <div class="btn-row">
+          <button id="btn-camera-connect" class="btn btn-green">Connect Camera</button>
+          <button id="btn-camera-disconnect" class="btn btn-sm btn-outline hidden">Stop Camera</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom HUD (only visible when car connected) -->
+    <div id="drive-hud" class="bottom-hud hidden">
+      <!-- WASD keys -->
+      <div class="wasd-group">
+        <div class="wasd-row">
+          <div class="key" id="key-w" data-key="w">W</div>
+        </div>
+        <div class="wasd-row">
+          <div class="key" id="key-a" data-key="a">A</div>
+          <div class="key" id="key-s" data-key="s">S</div>
+          <div class="key" id="key-d" data-key="d">D</div>
+        </div>
+      </div>
+
+      <!-- Hints -->
+      <div class="hints">
+        <p>WASD drive · L lights · T turbo · O donut</p>
+      </div>
+
+      <!-- Toggle buttons -->
+      <div class="toggle-group">
+        <button class="toggle-btn" id="btn-lights" data-active="false">
+          <span class="toggle-label">💡 Lights</span>
+          <span class="toggle-hotkey">L</span>
+          <span class="toggle-dot"></span>
+        </button>
+        <button class="toggle-btn" id="btn-turbo" data-active="false">
+          <span class="toggle-label">🚀 Turbo</span>
+          <span class="toggle-hotkey">T</span>
+          <span class="toggle-dot"></span>
+        </button>
+        <button class="toggle-btn" id="btn-donut" data-active="false">
+          <span class="toggle-label">🍩 Donut</span>
+          <span class="toggle-hotkey">O</span>
+          <span class="toggle-dot"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
