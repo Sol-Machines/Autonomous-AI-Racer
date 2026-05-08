@@ -19,3 +19,13 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Race Mode
+Race Mode/training/exports/
+Race Mode/training/data/
+*.pt
+
+# Solana keypairs and mint state (contain secrets)
+Race Mode/solana/treasury-keypair.json
+Race Mode/solana/faucet-keypair.json
+Race Mode/solana/boost-mint.json

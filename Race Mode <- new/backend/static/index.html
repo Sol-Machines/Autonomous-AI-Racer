@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Race Mode — Live</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --accent: #ff4400;
+  --accent2: #ff8800;
+  --bg: #080808;
+  --card: #111;
+  --border: #222;
+  --text: #f0f0f0;
+  --muted: #555;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Courier New', monospace;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.logo {
+  font-size: 20px;
+  font-weight: bold;
+  letter-spacing: 5px;
+  color: var(--accent);
+  text-shadow: 0 0 12px rgba(255,68,0,0.5);
+}
+.wallet-section { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+#balance { font-size: 13px; font-weight: bold; color: var(--accent2); }
+#wallet-addr { font-size: 11px; color: var(--muted); }
+
+/* ── Video ── */
+.video-wrap {
+  flex: 1;
+  position: relative;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 200px;
+}
+video {
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  display: block;
+}
+#vid-status {
+  position: absolute;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 20px;
+  pointer-events: none;
+}
+.boost-banner {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(28px, 8vw, 64px);
+  font-weight: bold;
+  letter-spacing: 6px;
+  color: #fff;
+  text-shadow: 0 0 20px var(--accent), 0 0 50px var(--accent);
+  background: rgba(255,68,0,0.12);
+  pointer-events: none;
+}
+.boost-banner.active { display: flex; animation: pulse 0.5s ease-in-out infinite alternate; }
+@keyframes pulse { from { opacity: 0.75; } to { opacity: 1; } }
+
+/* ── Footer ── */
+footer {
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* ── WASD controls ── */
+.drive-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.wasd {
+  display: grid;
+  grid-template-columns: repeat(3, 28px);
+  grid-template-rows: repeat(2, 28px);
+  gap: 3px;
+}
+.key {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--muted);
+  transition: background 0.08s, color 0.08s, border-color 0.08s;
+}
+.key.active {
+  background: var(--accent);
+  border-color: var(--accent2);
+  color: #fff;
+}
+.key.w { grid-column: 2; grid-row: 1; }
+.key.a { grid-column: 1; grid-row: 2; }
+.key.s { grid-column: 2; grid-row: 2; }
+.key.d { grid-column: 3; grid-row: 2; }
+
+.drive-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* ── REC controls ── */
+.rec-section { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#rec-btn {
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  background: #1e1e1e;
+  color: var(--text);
+  border: 1px solid #444;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  letter-spacing: 1px;
+}
+#rec-btn.active {
+  background: #5a0000;
+  border-color: #cc0000;
+  color: #ff4444;
+  animation: blink 1s step-start infinite;
+}
+@keyframes blink { 50% { opacity: 0.6; } }
+.rec-counts { font-size: 12px; color: var(--muted); }
+.rec-counts span { color: #aaa; }
+#train-btn {
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  background: #0d1f0d;
+  color: #4c4;
+  border: 1px solid #1a4a1a;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#train-btn:hover { background: #132813; }
+#train-status { font-size: 11px; color: var(--muted); }
+
+/* ── Boost row ── */
+.boost-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+#boost-btn {
+  flex-shrink: 0;
+  padding: 10px 28px;
+  font-size: 16px;
+  font-family: inherit;
+  font-weight: bold;
+  letter-spacing: 3px;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.2s, opacity 0.2s;
+  box-shadow: 0 0 16px rgba(255,68,0,0.4);
+}
+#boost-btn:hover:not(:disabled) { transform: scale(1.04); box-shadow: 0 0 24px rgba(255,68,0,0.7); }
+#boost-btn:active:not(:disabled) { transform: scale(0.97); }
+#boost-btn:disabled { opacity: 0.35; cursor: default; box-shadow: none; }
+.boost-bar-wrap { flex: 1; height: 16px; background: #1a1a1a; border: 1px solid var(--border); overflow: hidden; }
+.boost-bar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.15s linear; }
+.boost-label { font-size: 12px; color: var(--muted); min-width: 44px; text-align: right; }
+
+.status-row { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+.status-row .val { color: #aaa; }
+.status-row .val.ok { color: #4c4; }
+.status-row .val.warn { color: var(--accent2); }
+
+/* ── Buttons ── */
+button.secondary {
+  padding: 6px 12px;
+  background: #1e1e1e;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button.secondary:hover { background: #272727; }
+button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d1f0d; }
+
+/* ── Car picker ── */
+.car-bar {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.car-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.car-bar-header:hover { background: #161616; }
+.car-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted); flex-shrink: 0;
+  transition: background 0.3s;
+}
+.car-dot.connected { background: #4c4; box-shadow: 0 0 6px #4c4; }
+.car-bar-label { font-size: 13px; flex: 1; }
+.car-bar-label .car-name { color: var(--text); }
+.car-bar-label .no-car { color: var(--muted); }
+.car-bar-toggle { font-size: 11px; color: var(--muted); }
+
+.car-panel {
+  display: none;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+}
+.car-panel.open { display: block; }
+
+.car-grid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.car-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+  background: #181818;
+  border: 1px solid var(--border);
+  min-width: 140px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.car-card:hover { background: #1e1e1e; border-color: #444; }
+.car-card.active { border-color: #4c4; background: #0d1a0d; }
+.car-card.connecting { border-color: var(--accent2); opacity: 0.7; }
+.car-card-name { font-size: 13px; font-weight: bold; }
+.car-card-addr { font-size: 10px; color: var(--muted); font-family: monospace; }
+.car-card-status { font-size: 11px; color: var(--muted); }
+.car-card.active .car-card-status { color: #4c4; }
+
+.car-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#scan-results { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">&#127950; RACE MODE</div>
+  <div class="wallet-section">
+    <span id="balance">&#8212; $BOOST</span>
+    <span id="wallet-addr"></span>
+    <button class="secondary" id="wallet-btn">Connect Phantom</button>
+  </div>
+</header>
+
+<!-- ── Car picker ── -->
+<div class="car-bar">
+  <div class="car-bar-header" id="car-bar-header">
+    <div class="car-dot" id="car-dot"></div>
+    <div class="car-bar-label" id="car-bar-label"><span class="no-car">No car connected — tap to select</span></div>
+    <span class="car-bar-toggle" id="car-bar-toggle">&#9660;</span>
+  </div>
+  <div class="car-panel" id="car-panel">
+    <div class="car-grid" id="car-grid"><!-- populated by JS --></div>
+    <div class="car-actions">
+      <button class="secondary" id="scan-btn">&#128269; Scan for cars</button>
+      <button class="secondary" id="disconnect-btn" style="display:none">Disconnect</button>
+      <span id="scan-results"></span>
+    </div>
+  </div>
+</div>
+
+<div class="video-wrap">
+  <video id="video" autoplay muted playsinline></video>
+  <div id="vid-status">Connecting to camera&#8230;</div>
+  <div class="boost-banner" id="boost-banner">&#9889; BOOST &#9889;</div>
+</div>
+
+<footer>
+  <!-- ── Drive controls ── -->
+  <div class="drive-row">
+    <div class="wasd">
+      <div class="key w" id="key-w">W</div>
+      <div class="key a" id="key-a">A</div>
+      <div class="key s" id="key-s">S</div>
+      <div class="key d" id="key-d">D</div>
+    </div>
+    <div class="drive-hint">
+      Manual drive (autonomous off)<br>
+      Hold keys to steer
+    </div>
+
+    <!-- ── Data collection ── -->
+    <div class="rec-section">
+      <button id="rec-btn">&#9679; REC</button>
+      <div class="rec-counts">
+        L:<span id="rc-l">0</span>
+        S:<span id="rc-s">0</span>
+        R:<span id="rc-r">0</span>
+        &nbsp;total:<span id="rc-t">0</span>
+      </div>
+      <button id="train-btn">&#9654; Train now</button>
+      <span id="train-status"></span>
+    </div>
+  </div>
+
+  <!-- ── Boost ── -->
+  <div class="boost-row">
+    <button id="boost-btn">&#9889; BOOST</button>
+    <div class="boost-bar-wrap"><div class="boost-bar" id="boost-bar"></div></div>
+    <span class="boost-label" id="boost-label"></span>
+  </div>
+
+  <div class="status-row">
+    <span>Car: <span class="val" id="s-car">&#8212;</span></span>
+    <span>Mode: <span class="val" id="s-mode">&#8212;</span></span>
+    <span>Intent: <span class="val" id="s-intent">&#8212;</span></span>
+    <span>Video: <span class="val" id="s-net">connecting</span></span>
+    <span>Solana: <span class="val" id="s-sol">&#8212;</span></span>
+  </div>
+</footer>
+
+<script src="https://unpkg.com/@solana/web3.js@1/lib/index.iife.min.js"></script>
+<script>
+(async () => {
+  // ── Config ─────────────────────────────────────────────────────────────────
+  let cfg = {
+    pi_ip: location.hostname, go2rtc_port: 1984,
+    solana_configured: false,
+    solana_rpc_url: 'https://api.devnet.solana.com',
+    treasury_pubkey: '', boost_token_mint: '',
+    boost_token_decimals: 0, boost_duration_s: 3.0,
+  };
+  try { cfg = await fetch('/config').then(r => r.json()); } catch (_) {}
+
+  const boostDuration = cfg.boost_duration_s || 3.0;
+  const tokenUnit = BigInt(Math.pow(10, cfg.boost_token_decimals || 0));
+  document.getElementById('s-sol').textContent = cfg.solana_configured ? 'devnet' : 'dev mode';
+
+  // ── Car picker ─────────────────────────────────────────────────────────────
+  let knownCars = [];
+  let panelOpen = false;
+  let connectingAddress = null;
+
+  async function loadKnownCars() {
+    try {
+      const data = await fetch('/cars/known').then(r => r.json());
+      knownCars = data.cars || [];
+      renderCarGrid(knownCars);
+    } catch (_) {}
+  }
+
+  function renderCarGrid(cars) {
+    const grid = document.getElementById('car-grid');
+    grid.innerHTML = '';
+    for (const c of cars) {
+      const card = document.createElement('div');
+      card.className = 'car-card';
+      card.dataset.address = c.address;
+      card.dataset.name = c.name;
+      card.innerHTML = `
+        <div class="car-card-name">${c.name}</div>
+        <div class="car-card-addr">${c.address}</div>
+        <div class="car-card-status">tap to connect</div>`;
+      card.addEventListener('click', () => connectCar(c.address, c.name));
+      grid.appendChild(card);
+    }
+  }
+
+  function updateCarUI(status) {
+    const dot   = document.getElementById('car-dot');
+    const label = document.getElementById('car-bar-label');
+    const discBtn = document.getElementById('disconnect-btn');
+
+    if (status.connected) {
+      dot.classList.add('connected');
+      label.innerHTML = `<span class="car-name">&#9679; ${status.name || 'Car connected'}</span>`;
+      discBtn.style.display = '';
+      // Mark active card
+      document.querySelectorAll('.car-card').forEach(c => {
+        c.classList.remove('active', 'connecting');
+        if (c.querySelector('.car-card-status'))
+          c.querySelector('.car-card-status').textContent = 'tap to connect';
+      });
+      const activeCard = document.querySelector(`.car-card[data-name="${status.name}"]`);
+      if (activeCard) {
+        activeCard.classList.add('active');
+        activeCard.querySelector('.car-card-status').textContent = 'connected ✓';
+      }
+    } else {
+      dot.classList.remove('connected');
+      label.innerHTML = `<span class="no-car">No car connected — tap to select</span>`;
+      discBtn.style.display = 'none';
+      document.querySelectorAll('.car-card').forEach(c => {
+        c.classList.remove('active', 'connecting');
+        if (c.querySelector('.car-card-status'))
+          c.querySelector('.car-card-status').textContent = 'tap to connect';
+      });
+    }
+  }
+
+  async function connectCar(address, name) {
+    if (connectingAddress) return;
+    connectingAddress = address;
+    const card = document.querySelector(`.car-card[data-address="${address}"]`);
+    if (card) {
+      card.classList.add('connecting');
+      card.querySelector('.car-card-status').textContent = 'connecting…';
+    }
+    try {
+      const r = await fetch('/car/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address, name }),
+      });
+      const d = await r.json();
+      if (d.connected) {
+        updateCarUI({ connected: true, name });
+        setPanelOpen(false);
+      } else {
+        if (card) card.querySelector('.car-card-status').textContent = d.error || 'failed';
+        card?.classList.remove('connecting');
+      }
+    } catch (e) {
+      if (card) { card.querySelector('.car-card-status').textContent = 'error'; card.classList.remove('connecting'); }
+    } finally {
+      connectingAddress = null;
+    }
+  }
+
+  function setPanelOpen(open) {
+    panelOpen = open;
+    document.getElementById('car-panel').classList.toggle('open', open);
+    document.getElementById('car-bar-toggle').textContent = open ? '▲' : '▼';
+  }
+
+  document.getElementById('car-bar-header').addEventListener('click', () => setPanelOpen(!panelOpen));
+
+  document.getElementById('disconnect-btn').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await fetch('/car/disconnect', { method: 'POST' });
+    updateCarUI({ connected: false });
+  });
+
+  // Scan button
+  document.getElementById('scan-btn').addEventListener('click', async () => {
+    const btn = document.getElementById('scan-btn');
+    const results = document.getElementById('scan-results');
+    btn.disabled = true;
+    btn.textContent = 'Scanning…';
+    results.textContent = '';
+    try {
+      const data = await fetch('/car/scan', { method: 'POST' }).then(r => r.json());
+      const found = data.cars || [];
+      // Merge scan results with known cars (avoid duplicates)
+      const knownAddrs = new Set(knownCars.map(c => c.address));
+      const extra = found.filter(c => !knownAddrs.has(c.address));
+      renderCarGrid([...knownCars, ...extra]);
+      results.textContent = found.length ? `Found ${found.length} car(s)` : 'No cars found';
+    } catch (_) {
+      results.textContent = 'Scan failed';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🔍 Scan for cars';
+    }
+  });
+
+  await loadKnownCars();
+  // Open panel automatically if no car is connected on page load.
+  try {
+    const st = await fetch('/car/status').then(r => r.json());
+    if (!st.connected) setPanelOpen(true);
+    else updateCarUI(st);
+  } catch (_) { setPanelOpen(true); }
+
+  // ── WebRTC ─────────────────────────────────────────────────────────────────
+  const video = document.getElementById('video');
+  const vidStatus = document.getElementById('vid-status');
+  let pc = null, rtcWs = null, rtcRetry = null;
+
+  function startRTC() {
+    if (rtcRetry) { clearTimeout(rtcRetry); rtcRetry = null; }
+    const wsUrl = `ws://${cfg.pi_ip}:${cfg.go2rtc_port}/api/ws?src=camera`;
+    rtcWs = new WebSocket(wsUrl);
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    pc.addTransceiver('video', { direction: 'recvonly' });
+
+    pc.ontrack = (e) => {
+      video.srcObject = e.streams[0];
+      vidStatus.style.display = 'none';
+      document.getElementById('s-net').textContent = 'WebRTC ✓';
+      document.getElementById('s-net').className = 'val ok';
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
+        document.getElementById('s-net').textContent = 'reconnecting…';
+        document.getElementById('s-net').className = 'val warn';
+        vidStatus.textContent = 'Camera disconnected — reconnecting…';
+        vidStatus.style.display = '';
+        rtcRetry = setTimeout(startRTC, 3000);
+      }
+    };
+    pc.onicecandidate = (e) => {
+      if (e.candidate && rtcWs.readyState === WebSocket.OPEN)
+        rtcWs.send(JSON.stringify({ type: 'webrtc/candidate', value: e.candidate.candidate }));
+    };
+    rtcWs.onopen = async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      rtcWs.send(JSON.stringify({ type: 'webrtc/offer', value: offer.sdp }));
+    };
+    rtcWs.onmessage = async (msg) => {
+      try {
+        const data = JSON.parse(msg.data);
+        if (data.type === 'webrtc/answer')
+          await pc.setRemoteDescription({ type: 'answer', sdp: data.value });
+        else if (data.type === 'webrtc/candidate' && data.value)
+          await pc.addIceCandidate({ candidate: data.value, sdpMid: '0' });
+      } catch (_) {}
+    };
+    rtcWs.onerror = () => {
+      document.getElementById('s-net').textContent = 'WS error';
+      document.getElementById('s-net').className = 'val warn';
+      vidStatus.style.display = '';
+      rtcRetry = setTimeout(startRTC, 3000);
+    };
+  }
+  startRTC();
+
+  // ── WASD keyboard drive ────────────────────────────────────────────────────
+  const keys = { w: false, a: false, s: false, d: false };
+  let autonomous = false;  // kept in sync with poll()
+
+  function keyEl(k) { return document.getElementById('key-' + k); }
+
+  async function sendControl() {
+    if (autonomous) return;
+    const forward = (keys.w || keys.a || keys.d) ? 1 : 0;
+    const reverse = keys.s ? 1 : 0;
+    const left    = keys.a ? 1 : 0;
+    const right   = keys.d ? 1 : 0;
+    try {
+      await fetch('/car/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forward, reverse, left, right }),
+      });
+    } catch (_) {}
+  }
+
+  document.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (!(k in keys)) return;
+    e.preventDefault();
+    if (keys[k]) return;
+    keys[k] = true;
+    keyEl(k).classList.add('active');
+    sendControl();
+  });
+
+  document.addEventListener('keyup', (e) => {
+    const k = e.key.toLowerCase();
+    if (!(k in keys)) return;
+    e.preventDefault();
+    keys[k] = false;
+    keyEl(k).classList.remove('active');
+    sendControl();
+  });
+
+  // ── Data collection (REC) ──────────────────────────────────────────────────
+  let recording = false;
+  let recTimer  = null;
+  const rc = { left: 0, straight: 0, right: 0 };
+
+  function currentLabel() {
+    if (keys.a) return 0;   // left
+    if (keys.d) return 2;   // right
+    return 1;               // straight
+  }
+
+  function updateRecCounts() {
+    document.getElementById('rc-l').textContent = rc.left;
+    document.getElementById('rc-s').textContent = rc.straight;
+    document.getElementById('rc-r').textContent = rc.right;
+    document.getElementById('rc-t').textContent = rc.left + rc.straight + rc.right;
+  }
+
+  async function takeSample() {
+    // In autonomous mode use the backend's perceived label; in manual use keys.
+    let label;
+    if (autonomous) {
+      try {
+        const s = await fetch('/car/status').then(r => r.json());
+        const intent = s.last_intent;
+        if (!intent) return;
+        label = intent.left ? 0 : intent.right ? 2 : 1;
+      } catch (_) { return; }
+    } else {
+      label = currentLabel();
+    }
+    try {
+      await fetch('/training/sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      });
+      const names = ['left', 'straight', 'right'];
+      rc[names[label]]++;
+      updateRecCounts();
+    } catch (_) {}
+  }
+
+  function toggleRec() {
+    recording = !recording;
+    const btn = document.getElementById('rec-btn');
+    if (recording) {
+      btn.classList.add('active');
+      btn.textContent = '■ STOP';
+      recTimer = setInterval(takeSample, 200);  // 5 Hz
+    } else {
+      btn.classList.remove('active');
+      btn.textContent = '● REC';
+      clearInterval(recTimer);
+      recTimer = null;
+    }
+  }
+
+  document.getElementById('rec-btn').addEventListener('click', toggleRec);
+
+  // Load existing stats on page load
+  try {
+    const st = await fetch('/training/stats').then(r => r.json());
+    rc.left = st.left; rc.straight = st.straight; rc.right = st.right;
+    updateRecCounts();
+  } catch (_) {}
+
+  // ── Train button ───────────────────────────────────────────────────────────
+  document.getElementById('train-btn').addEventListener('click', async () => {
+    const btn    = document.getElementById('train-btn');
+    const status = document.getElementById('train-status');
+    btn.disabled = true;
+    status.textContent = 'running…';
+    try {
+      const r = await fetch('/training/run', { method: 'POST' });
+      const d = await r.json();
+      status.textContent = d.message || JSON.stringify(d);
+    } catch (e) {
+      status.textContent = 'error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ── Wallet ─────────────────────────────────────────────────────────────────
+  let walletPubkey = null;
+  function getProvider() {
+    return window.phantom?.solana || (window.solana?.isPhantom ? window.solana : null);
+  }
+  async function connectWallet() {
+    const p = getProvider();
+    if (!p) { alert('Phantom not found. Install the extension or open in Phantom mobile.'); return; }
+    try {
+      const resp = await p.connect();
+      walletPubkey = resp.publicKey;
+      const addr = walletPubkey.toString();
+      document.getElementById('wallet-addr').textContent = addr.slice(0,4)+'…'+addr.slice(-4);
+      const btn = document.getElementById('wallet-btn');
+      btn.textContent = 'Connected'; btn.classList.add('connected');
+      if (cfg.solana_configured) await refreshBalance();
+    } catch (e) { console.error('Wallet connect failed', e); }
+  }
+  async function refreshBalance() {
+    if (!walletPubkey || !cfg.solana_configured) return;
+    try {
+      const conn = new solanaWeb3.Connection(cfg.solana_rpc_url, 'confirmed');
+      const mint = new solanaWeb3.PublicKey(cfg.boost_token_mint);
+      const { value: accounts } = await conn.getParsedTokenAccountsByOwner(walletPubkey, { mint });
+      const amt = accounts[0]?.account.data.parsed.info.tokenAmount.uiAmount ?? 0;
+      document.getElementById('balance').textContent = `${amt} $BOOST`;
+    } catch (_) {}
+  }
+  document.getElementById('wallet-btn').addEventListener('click', connectWallet);
+
+  // ── SPL Transfer helpers ───────────────────────────────────────────────────
+  const TOKEN_PROGRAM_ID    = new solanaWeb3.PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+  const ASSOC_TOKEN_PROGRAM = new solanaWeb3.PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1bT8');
+  function findATA(owner, mint) {
+    const [ata] = solanaWeb3.PublicKey.findProgramAddressSync(
+      [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()], ASSOC_TOKEN_PROGRAM);
+    return ata;
+  }
+  function uint64LE(n) {
+    const buf = new Uint8Array(8); let v = BigInt(n);
+    for (let i = 0; i < 8; i++) { buf[i] = Number(v & 0xffn); v >>= 8n; }
+    return buf;
+  }
+
+  // ── Boost ─────────────────────────────────────────────────────────────────
+  async function sendBoost() {
+    const btn = document.getElementById('boost-btn');
+    btn.disabled = true;
+    try {
+      if (cfg.solana_configured && walletPubkey) await solanaBoost();
+      else await apiBoost('web');
+      setTimeout(refreshBalance, 2500);
+    } catch (e) {
+      console.error('Boost failed', e);
+      try { await apiBoost('fallback'); } catch (_) {}
+    } finally {
+      setTimeout(() => { btn.disabled = false; }, 2000);
+    }
+  }
+  async function apiBoost(source) {
+    await fetch('/boost/trigger', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source, duration_s: boostDuration }),
+    });
+  }
+  async function solanaBoost() {
+    const p = getProvider(); if (!p) throw new Error('No wallet');
+    const conn     = new solanaWeb3.Connection(cfg.solana_rpc_url, 'confirmed');
+    const mint     = new solanaWeb3.PublicKey(cfg.boost_token_mint);
+    const treasury = new solanaWeb3.PublicKey(cfg.treasury_pubkey);
+    const srcATA   = findATA(walletPubkey, mint);
+    const dstATA   = findATA(treasury, mint);
+    const data     = new Uint8Array([3, ...uint64LE(tokenUnit)]);
+    const ix = new solanaWeb3.TransactionInstruction({
+      programId: TOKEN_PROGRAM_ID,
+      keys: [
+        { pubkey: srcATA,       isSigner: false, isWritable: true },
+        { pubkey: dstATA,       isSigner: false, isWritable: true },
+        { pubkey: walletPubkey, isSigner: true,  isWritable: false },
+      ],
+      data,
+    });
+    const { blockhash } = await conn.getLatestBlockhash();
+    const tx = new solanaWeb3.Transaction({ recentBlockhash: blockhash, feePayer: walletPubkey }).add(ix);
+    const signed = await p.signTransaction(tx);
+    await conn.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    await apiBoost('solana');
+  }
+  document.getElementById('boost-btn').addEventListener('click', sendBoost);
+
+  // ── Status polling ─────────────────────────────────────────────────────────
+  async function poll() {
+    try {
+      const [cs, bs] = await Promise.all([
+        fetch('/car/status').then(r => r.json()),
+        fetch('/boost/status').then(r => r.json()),
+      ]);
+      autonomous = cs.autonomous;
+
+      updateCarUI(cs);
+
+      const carEl = document.getElementById('s-car');
+      carEl.textContent = cs.connected ? (cs.name || 'connected') : 'disconnected';
+      carEl.className = 'val ' + (cs.connected ? 'ok' : 'warn');
+
+      const modeEl = document.getElementById('s-mode');
+      modeEl.textContent = cs.autonomous ? 'AUTO' : 'manual';
+      modeEl.className = 'val ' + (cs.autonomous ? 'ok' : '');
+
+      const intent = cs.last_intent;
+      document.getElementById('s-intent').textContent = intent ? intent.reason : '–';
+
+      const banner = document.getElementById('boost-banner');
+      const bar    = document.getElementById('boost-bar');
+      const label  = document.getElementById('boost-label');
+      if (bs.active) {
+        banner.classList.add('active');
+        bar.style.width = Math.min(100, (bs.remaining_s / boostDuration) * 100) + '%';
+        label.textContent = bs.remaining_s.toFixed(1) + 's';
+      } else {
+        banner.classList.remove('active');
+        bar.style.width = '0%';
+        label.textContent = '';
+      }
+    } catch (_) {}
+  }
+  setInterval(poll, 400);
+  poll();
+})();
+</script>
+</body>
+</html>
