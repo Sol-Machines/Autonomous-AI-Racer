@@ -1,0 +1,21 @@
+{
+    "name": "sol-machine-backend",
+    "version": "1.0.0",
+    "type": "module",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js"
+    },
+    "engines": {
+        "node": ">=20.18.0"
+    },
+    "dependencies": {
+        "@solana/web3.js": "^1.98.4",
+        "better-sqlite3": "^11.0.0",
+        "bs58": "^6.0.0",
+        "cors": "^2.8.5",
+        "dotenv": "^17.4.2",
+        "express": "^4.19.2",
+        "nanoid": "^5.0.7"
+    }
+}

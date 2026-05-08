@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sol Machine</title>
+    <link rel="stylesheet" href="style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700&family=Rajdhani:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+</head>
+
+<body>
+    <main class="page">
+        <header class="top-bar">
+            <div class="boost-timer" id="boostTimer">Next boost in: "x" s</div>
+
+            <div class="top-actions">
+                <button class="start-race-btn" id="startRaceBtn">Start Race</button>
+                <button class="wallet-btn" id="connectWalletBtn">Connect<br>Wallet</button>
+            </div>
+        </header>
+
+        <section class="hero">
+            <img src="images/sol-machine-logo.png" alt="Sol Machine" class="site-logo" />
+        </section>
+
+        <!--
+            ============================================================
+            RACE BET PANEL
+            ============================================================
+
+            This is the new central betting UI.
+
+            Stage 1:
+            - builds the visual betting panel
+            - stores frontend selection state
+            - does not remove the old per-car dropdown flow yet
+
+            Later:
+            - this panel will fully replace the car-card dropdowns
+        -->
+        <section class="race-bet-panel" id="raceBetPanel">
+            <div class="race-bet-header">
+                <div>
+                    <h2>Race Bet</h2>
+                    <p>Choose your bet type, stake, and race prediction.</p>
+                </div>
+
+                <div class="race-bet-note">
+                    3 boost tokens per confirmed bettor
+                </div>
+            </div>
+
+            <!-- Bet type selection -->
+            <div class="bet-panel-section">
+                <div class="bet-panel-label">Bet Type</div>
+
+                <div class="bet-type-toggle" role="group" aria-label="Bet type">
+                    <button type="button" class="bet-type-btn active" data-bet-type="winner" id="winnerBetTypeBtn">
+                        <span class="bet-type-title">Winner</span>
+                        <span class="bet-type-subtitle">Pick 1 car · Pays 2x</span>
+                    </button>
+
+                    <button type="button" class="bet-type-btn" data-bet-type="trifecta" id="trifectaBetTypeBtn">
+                        <span class="bet-type-title">Trifecta</span>
+                        <span class="bet-type-subtitle">Exact order · Pays 5x</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Stake selection -->
+            <div class="bet-panel-section">
+                <div class="bet-panel-label">Stake</div>
+
+                <div class="stake-toggle" role="group" aria-label="Stake amount">
+                    <button type="button" class="stake-btn active" data-stake="1">1</button>
+                    <button type="button" class="stake-btn" data-stake="5">5</button>
+                    <button type="button" class="stake-btn" data-stake="10">10</button>
+                </div>
+            </div>
+
+            <!-- Winner selection -->
+            <div class="bet-panel-section" id="winnerSelectionPanel">
+                <div class="bet-panel-label">Winner Selection</div>
+
+                <div class="winner-car-toggle" role="group" aria-label="Winner car">
+                    <button type="button" class="winner-car-btn" data-car="Car 1">Car 1</button>
+                    <button type="button" class="winner-car-btn" data-car="Car 2">Car 2</button>
+                    <button type="button" class="winner-car-btn" data-car="Car 3">Car 3</button>
+                </div>
+            </div>
+
+            <!-- Trifecta selection -->
+            <div class="bet-panel-section hidden" id="trifectaSelectionPanel">
+                <div class="bet-panel-label">Trifecta Order</div>
+
+                <div class="trifecta-grid">
+                    <label class="trifecta-field">
+                        <span>1st Place</span>
+                        <select id="trifectaFirstSelect">
+                            <option value="">Select car</option>
+                            <option value="Car 1">Car 1</option>
+                            <option value="Car 2">Car 2</option>
+                            <option value="Car 3">Car 3</option>
+                        </select>
+                    </label>
+
+                    <label class="trifecta-field">
+                        <span>2nd Place</span>
+                        <select id="trifectaSecondSelect">
+                            <option value="">Select car</option>
+                            <option value="Car 1">Car 1</option>
+                            <option value="Car 2">Car 2</option>
+                            <option value="Car 3">Car 3</option>
+                        </select>
+                    </label>
+
+                    <label class="trifecta-field">
+                        <span>3rd Place</span>
+                        <select id="trifectaThirdSelect">
+                            <option value="">Select car</option>
+                            <option value="Car 1">Car 1</option>
+                            <option value="Car 2">Car 2</option>
+                            <option value="Car 3">Car 3</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="trifecta-preview" id="trifectaPreview">
+                    Pick 1st, 2nd, and 3rd place.
+                </div>
+            </div>
+
+            <!-- Bet summary -->
+            <div class="bet-panel-summary">
+                <div>
+                    <span class="summary-label">Potential Payout</span>
+                    <strong id="betPanelPotentialPayout">1 → 2</strong>
+                </div>
+
+                <div>
+                    <span class="summary-label">Boost Access</span>
+                    <strong id="betPanelBoostAccess">Selected winner only</strong>
+                </div>
+            </div>
+
+            <button type="button" class="place-bet-btn" id="placeBetBtn">
+                Place Winner Bet
+            </button>
+
+            <p class="bet-panel-footnote">
+                Bigger bets do not grant extra boost control. Every confirmed bettor gets 3 race boost tokens.
+            </p>
+        </section>
+
+        <!--
+            ============================================================
+            BET / RESULT HUD
+            ============================================================
+
+            Functional first:
+            - Bet Slip: current active bet
+            - Race Result: latest settled result
+            - System: wallet / mode / network info
+            -->
+        <section class="bet-hud">
+            <!-- Current bet panel -->
+            <div class="hud-panel">
+                <div class="hud-title">Bet Slip</div>
+
+                <div class="hud-grid">
+                    <div class="hud-item">
+                        <span class="hud-label">Race</span>
+                        <span class="hud-value" id="hudCurrentRaceId">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Bet Type</span>
+                        <span class="hud-value" id="hudBetType">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Selection</span>
+                        <span class="hud-value" id="hudSelectedCar">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Stake</span>
+                        <span class="hud-value" id="hudStakeAmount">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Potential Payout</span>
+                        <span class="hud-value" id="hudPotentialPayout">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Bet Status</span>
+                        <span class="hud-value hud-status" id="hudBetStatus">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Latest race result panel -->
+            <div class="hud-panel">
+                <div class="hud-title">Race Result</div>
+
+                <div class="hud-grid">
+                    <div class="hud-item">
+                        <span class="hud-label">Race</span>
+                        <span class="hud-value" id="hudResultRaceId">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Race Outcome</span>
+                        <span class="hud-value" id="hudRaceOutcome">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Winning Car</span>
+                        <span class="hud-value" id="hudWinningCar">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Finish Order</span>
+                        <span class="hud-value" id="hudFinishOrder">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Your Result</span>
+                        <span class="hud-value hud-status" id="hudYourResult">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Settlement</span>
+                        <span class="hud-value" id="hudSettlement">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- System panel -->
+            <div class="hud-panel">
+                <div class="hud-title">System</div>
+
+                <div class="hud-grid">
+                    <div class="hud-item">
+                        <span class="hud-label">Mode</span>
+                        <span class="hud-value" id="hudAppMode">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Network</span>
+                        <span class="hud-value" id="hudNetwork">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Token</span>
+                        <span class="hud-value" id="hudTokenSymbol">—</span>
+                    </div>
+
+                    <div class="hud-item">
+                        <span class="hud-label">Wallet</span>
+                        <span class="hud-value" id="hudWallet">—</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!--
+            ============================================================
+            BOOST STRATEGY STRIP
+            ============================================================
+        -->
+        <section class="boost-strategy-strip" id="boostStrategyStrip">
+            <div class="boost-strip-header">
+                <span class="boost-strip-title">Boost Strategy</span>
+                <span class="boost-strip-subtitle">Use your boost tokens strategically during voting cycles.</span>
+            </div>
+
+            <div class="boost-strip-grid">
+                <div class="boost-strip-item">
+                    <span>Tokens</span>
+                    <strong id="hudBoostTokens">—</strong>
+                </div>
+
+                <div class="boost-strip-item">
+                    <span>Car 1 Power</span>
+                    <strong id="hudBoostPowerCar1">—</strong>
+                </div>
+
+                <div class="boost-strip-item">
+                    <span>Car 2 Power</span>
+                    <strong id="hudBoostPowerCar2">—</strong>
+                </div>
+
+                <div class="boost-strip-item">
+                    <span>Car 3 Power</span>
+                    <strong id="hudBoostPowerCar3">—</strong>
+                </div>
+            </div>
+        </section>
+
+        <section class="cars-grid">
+            <article class="car-card" data-car="Car 1">
+                <div class="car-image">
+                    <div class="placeholder-box">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                d="M21 19V5a2 2 0 0 0-2-2H5C3.9 3 3 3.9 3 5v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2zM8.5 11.5l2.5 3.01L14.5 10l4.5 6H5l3.5-4.5zM8 8.5A1.5 1.5 0 1 1 8 5.5a1.5 1.5 0 0 1 0 3z" />
+                        </svg>
+                    </div>
+                </div>
+                <div class="car-label">Car 1</div>
+
+                <button class="boost-btn hidden">Boost</button>
+            </article>
+
+            <article class="car-card" data-car="Car 2">
+                <div class="car-image">
+                    <div class="placeholder-box">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                d="M21 19V5a2 2 0 0 0-2-2H5C3.9 3 3 3.9 3 5v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2zM8.5 11.5l2.5 3.01L14.5 10l4.5 6H5l3.5-4.5zM8 8.5A1.5 1.5 0 1 1 8 5.5a1.5 1.5 0 0 1 0 3z" />
+                        </svg>
+                    </div>
+                </div>
+                <div class="car-label">Car 2</div>
+
+                <button class="boost-btn hidden">Boost</button>
+            </article>
+
+            <article class="car-card" data-car="Car 3">
+                <div class="car-image">
+                    <div class="placeholder-box">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                d="M21 19V5a2 2 0 0 0-2-2H5C3.9 3 3 3.9 3 5v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2zM8.5 11.5l2.5 3.01L14.5 10l4.5 6H5l3.5-4.5zM8 8.5A1.5 1.5 0 1 1 8 5.5a1.5 1.5 0 0 1 0 3z" />
+                        </svg>
+                    </div>
+                </div>
+                <div class="car-label">Car 3</div>
+
+                <button class="boost-btn hidden">Boost</button>
+            </article>
+        </section>
+
+        <section class="track-preview">
+            <div class="placeholder-box track-placeholder">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                        d="M21 19V5a2 2 0 0 0-2-2H5C3.9 3 3 3.9 3 5v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2zM8.5 11.5l2.5 3.01L14.5 10l4.5 6H5l3.5-4.5zM8 8.5A1.5 1.5 0 1 1 8 5.5a1.5 1.5 0 0 1 0 3z" />
+                </svg>
+            </div>
+        </section>
+    </main>
+
+    <div class="boost-modal hidden" id="boostResultModal" aria-hidden="true">
+        <div class="boost-modal-card">
+            <div class="boost-modal-glow"></div>
+            <h2 class="boost-modal-title">Boost Locked In</h2>
+            <p class="boost-modal-text" id="boostResultText">
+                Car 1 won the boost.
+            </p>
+            <button class="boost-modal-btn" id="closeBoostResultModal">Close</button>
+        </div>
+    </div>
+
+    <!--
+    Solana Web3.js browser bundle.
+
+    Used only in devnet mode to build and send real Devnet SOL transactions.
+    Demo mode does not depend on this.
+    -->
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+
+    <!-- For Railway use -->
+    <script src="script.js?v=race-id-fix-2"></script>
+
+
+    <!-- For local use
+    <script src="script.js"></script>
+    -->
+</body>
+
+</html>

@@ -11,6 +11,7 @@ __pycache__/
 
 # Node
 node_modules/
+.next/
 
 # OS files
 .DS_Store
@@ -20,12 +21,28 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Race Mode
-Race Mode/training/exports/
-Race Mode/training/data/
+# Trained models (regenerated from training pipeline)
 *.pt
 
-# Solana keypairs and mint state (contain secrets)
+# ── Solana keypairs and mint state — contain secrets, NEVER commit ─────────
+# (path-flexible so they're protected wherever they live)
+**/treasury-keypair.json
+**/faucet-keypair.json
+**/boost-mint.json
+
+# ── Training data and exports (large, regenerable) ─────────────────────────
+**/training/data/
+**/training/exports/
+
+# ── SQLite databases (local state) ─────────────────────────────────────────
+**/data/*.sqlite
+**/*.sqlite
+**/*.sqlite-journal
+
+# ── Legacy Race Mode rules (kept for safety; the path-flexible rules above
+# already cover these, but keeping explicit paths in case folders linger) ──
+Race Mode/training/exports/
+Race Mode/training/data/
 Race Mode/solana/treasury-keypair.json
 Race Mode/solana/faucet-keypair.json
 Race Mode/solana/boost-mint.json

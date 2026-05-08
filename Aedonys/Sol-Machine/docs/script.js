@@ -1,0 +1,3191 @@
+"use strict";
+
+/*
+  ============================================================
+  CONFIG
+  ============================================================
+*/
+
+// Base URL for your backend API.
+// This should point at your live backend, including the /api prefix,
+// because all backend routes are under /api/...
+const API_BASE = "https://sol-machine-production.up.railway.app/api";
+
+// Local demo backend
+// const API_BASE = "http://localhost:3001/api";
+
+/*
+  ============================================================
+  APP CONFIG STATE
+  ============================================================
+
+  The backend tells the frontend which mode we are running in.
+
+  demo:
+  - use current generated demo wallet
+  - use mock transaction signatures
+  - current working flow remains unchanged
+
+  devnet:
+  - use real Solana wallet connection
+  - create real Devnet transactions
+  - backend verifies transaction signatures
+*/
+let appConfig = {
+  appMode: "demo",
+  demoMode: true,
+  solanaCluster: "devnet",
+  solanaRpcUrl: "https://api.devnet.solana.com",
+  tokenSymbol: "BOOST",
+  tokenMint: null,
+  treasuryWallet: null
+};
+
+/*
+  Difference between backend server time and this device's local time.
+
+  Why:
+  - countdown end times are created by the backend
+  - Date.now() uses the user's device clock
+  - different devices can be 1-2 seconds apart
+  - using this offset makes all devices count down from backend time
+*/
+let serverTimeOffsetMs = 0;
+
+/*
+  Fetch safe public config from the backend.
+
+  This lets backend .env settings control app mode instead of hardcoding
+  demo/devnet behaviour throughout the frontend.
+*/
+async function fetchAppConfig() {
+  const res = await fetch(`${API_BASE}/config?ts=${Date.now()}`, {
+    cache: "no-store"
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch app config");
+  }
+
+  appConfig = {
+    ...appConfig,
+    ...data
+  };
+
+  return appConfig;
+}
+
+/*
+  Demo wallet helper.
+
+  While real Solana wallet connection is not implemented yet,
+  each browser/device gets its own generated demo wallet ID.
+
+  Why this matters:
+  - if the wallet were hardcoded, phone + laptop would look like
+    the same player to the backend
+  - storing it in localStorage means each device keeps its own
+    stable demo identity between refreshes
+*/
+function getDemoWallet() {
+  let demoWallet = localStorage.getItem("demoWallet");
+
+  if (!demoWallet) {
+    demoWallet = `DemoWallet_${crypto.randomUUID()}`;
+    localStorage.setItem("demoWallet", demoWallet);
+  }
+
+  return demoWallet;
+}
+
+// The current demo wallet used by this device/browser.
+const DEMO_WALLET = getDemoWallet();
+
+/*
+  ============================================================
+  DOM REFERENCES
+  ============================================================
+*/
+
+// Timer/status text at the top of the page.
+const boostTimer = document.getElementById("boostTimer");
+
+// Placeholder wallet button.
+const connectWalletBtn = document.getElementById("connectWalletBtn");
+
+// Button to start a 20 second delay before race starts
+const startRaceBtn = document.getElementById("startRaceBtn");
+
+// Boost buttons.
+// These are queried once on load because the page structure is static.
+const boostButtons = document.querySelectorAll(".boost-btn");
+
+/*
+  Modal elements used for the "you did not win the boost" popup.
+
+  boostResultModal:
+    the dark full-screen overlay
+
+  boostResultText:
+    the text node inside the modal that gets updated with the winner
+
+  closeBoostResultModalBtn:
+    the button used to dismiss the popup
+*/
+const boostResultModal = document.getElementById("boostResultModal");
+const boostResultText = document.getElementById("boostResultText");
+const closeBoostResultModalBtn = document.getElementById("closeBoostResultModal");
+
+/*
+  HUD DOM REFERENCES
+
+  These elements display:
+  - the current bet
+  - the latest settled race result
+  - app/wallet/network info
+*/
+const hudCurrentRaceId = document.getElementById("hudCurrentRaceId");
+const hudSelectedCar = document.getElementById("hudSelectedCar");
+const hudStakeAmount = document.getElementById("hudStakeAmount");
+const hudPotentialPayout = document.getElementById("hudPotentialPayout");
+const hudBetStatus = document.getElementById("hudBetStatus");
+
+const hudResultRaceId = document.getElementById("hudResultRaceId");
+const hudRaceOutcome = document.getElementById("hudRaceOutcome");
+const hudWinningCar = document.getElementById("hudWinningCar");
+const hudFinishOrder = document.getElementById("hudFinishOrder");
+const hudYourResult = document.getElementById("hudYourResult");
+const hudSettlement = document.getElementById("hudSettlement");
+
+const hudAppMode = document.getElementById("hudAppMode");
+const hudNetwork = document.getElementById("hudNetwork");
+const hudTokenSymbol = document.getElementById("hudTokenSymbol");
+const hudWallet = document.getElementById("hudWallet");
+
+/*
+  RACE BET PANEL REFERENCES
+
+  New central betting panel.
+
+  Stage 1:
+  - controls visual state only
+  - does not replace the old car-card dropdown flow yet
+*/
+const raceBetPanel = document.getElementById("raceBetPanel");
+
+const betTypeButtons = document.querySelectorAll(".bet-type-btn");
+const stakeButtons = document.querySelectorAll(".stake-btn");
+const winnerCarButtons = document.querySelectorAll(".winner-car-btn");
+
+const winnerSelectionPanel = document.getElementById("winnerSelectionPanel");
+const trifectaSelectionPanel = document.getElementById("trifectaSelectionPanel");
+
+const trifectaFirstSelect = document.getElementById("trifectaFirstSelect");
+const trifectaSecondSelect = document.getElementById("trifectaSecondSelect");
+const trifectaThirdSelect = document.getElementById("trifectaThirdSelect");
+const trifectaPreview = document.getElementById("trifectaPreview");
+
+const betPanelPotentialPayout = document.getElementById("betPanelPotentialPayout");
+const betPanelBoostAccess = document.getElementById("betPanelBoostAccess");
+const placeBetBtn = document.getElementById("placeBetBtn");
+
+/*
+  BOOST STRATEGY HUD REFERENCES
+
+  These display:
+  - internal race boost-token balance
+  - live boost power percentages for each car
+
+  Important:
+  - boost-token balance is backend-owned
+  - boost power is currently a placeholder from the website backend
+  - later boost power can come from the car/race backend
+*/
+const hudBoostTokens = document.getElementById("hudBoostTokens");
+const hudBoostPowerCar1 = document.getElementById("hudBoostPowerCar1");
+const hudBoostPowerCar2 = document.getElementById("hudBoostPowerCar2");
+const hudBoostPowerCar3 = document.getElementById("hudBoostPowerCar3");
+
+/*
+  BET SLIP HUD REFERENCE
+
+  New field so the HUD can display:
+  - Winner
+  - Trifecta
+*/
+const hudBetType = document.getElementById("hudBetType");
+
+/*
+  ============================================================
+  APP STATE
+  ============================================================
+  These variables track the frontend's current understanding of:
+  - the backend cycle state
+  - which car the user has chosen
+  - whether a vote is being submitted
+  - what the UI should currently show
+*/
+
+// Current backend cycle info.
+let currentCycleId = null;
+let currentRaceId = null;
+let currentState = null;
+let currentWinnerCarId = null;
+let currentCycleEndsAt = null;
+let previousState = null;
+
+// Car selection state:
+// selectedCarId:
+//   current UI selection for this round
+//
+// pendingRaceStartCarId:
+//   used while user has selected a car but backend is still transitioning
+//   from idle -> voting
+//
+// lockedCarId:
+//   the car we keep visible for the current round so the UI does not jump around
+let selectedCarId = null;
+let pendingRaceStartCarId = null;
+
+/*
+  Do not restore lockedCarId directly from localStorage on page load.
+
+  Why:
+  - localStorage can survive page refreshes, backend resets, failed wallet
+    transactions, or race changes
+  - if lockedCarId is restored without a confirmed backend bet, the UI can
+    jump straight to the selected-car screen and soft-lock
+
+  From now on, lockedCarId should only be restored from backend truth via
+  restoreCurrentBetFromBackend().
+*/
+let lockedCarId = null;
+
+// Vote submission state.
+let currentVoteIntentId = null;
+let isSubmittingVote = false;
+let submittingVoteCycleId = null;
+
+// Tracks which cycle the user already voted in.
+// Stored in localStorage so a refresh keeps the "Vote Submitted" state.
+let votedCycleId = Number(localStorage.getItem("votedCycleId")) || null;
+
+// Polling / countdown intervals.
+let pollInterval = null;
+let countdownInterval = null;
+
+// Used to ignore stale backend sync responses.
+let syncRequestCounter = 0;
+
+// Frontend flow flags.
+let isStartingRace = false;
+let hasInitialSync = false;
+
+/*
+  Tracks which cycle has already shown the "lost boost" popup.
+
+  This prevents the modal from repeatedly reopening every time
+  renderStateFromBackend() runs during the same boost cycle.
+*/
+let shownBoostResultCycleId = null;
+
+// Betting states
+let currentBetId = null;
+let currentBetStatus = null;
+let isSubmittingBet = false;
+
+/*
+  HUD DATA STATE
+
+  currentBetDetails:
+    the current active-race bet for this wallet, if any
+
+  latestSettledBetDetails:
+    the most recent won/lost/refunded bet for this wallet
+*/
+let currentBetDetails = null;
+let latestSettledBetDetails = null;
+
+/*
+  BOOST STRATEGY HUD STATE
+
+  currentBoostTokens:
+    backend-owned internal boost-token balance for this wallet/race
+
+  currentBoostPower:
+    latest boost-power percentages for each car
+
+  These are display values only.
+  The frontend should never be trusted to enforce token spending.
+*/
+let currentBoostTokens = null;
+
+let currentBoostPower = {
+  "Car 1": null,
+  "Car 2": null,
+  "Car 3": null
+};
+
+/*
+  NEW RACE BET PANEL STATE
+
+  selectedBetType:
+    winner or trifecta
+
+  selectedStakeAmount:
+    current stake amount chosen in the new panel
+
+  selectedWinnerCarId:
+    selected car for winner bet
+
+  selectedTrifectaOrder:
+    exact finishing order for trifecta bet
+*/
+let selectedBetType = "winner";
+let selectedStakeAmount = 1;
+let selectedWinnerCarId = null;
+
+let selectedTrifectaOrder = {
+  first: "",
+  second: "",
+  third: ""
+};
+
+/*
+  ============================================================
+  WALLET STATE
+  ============================================================
+
+  Demo mode:
+  - uses DEMO_WALLET generated from localStorage
+
+  Devnet mode:
+  - uses a real injected Solana wallet such as Phantom or Solflare
+  - connectedWalletPublicKey becomes the wallet address used for bets/votes
+*/
+let connectedWalletPublicKey = null;
+let isWalletConnecting = false;
+/*
+  Wallet balance shown in the top bar.
+
+  Devnet v1:
+  - shows SOL balance
+
+  Later:
+  - this can show $BOOST SPL token balance instead.
+*/
+let connectedWalletBalance = null;
+
+/*
+  ============================================================
+  UI HELPERS
+  ============================================================
+*/
+
+/*
+  Smoothly scrolls to the race HUD with a buffer for the sticky top bar.
+
+  Why not scrollIntoView?
+  - scrollIntoView places the HUD right at the top of the viewport
+  - your sticky top bar can cover the top of the HUD cards
+
+  This version:
+  - scrolls slightly above the HUD
+  - uses easing so it slows smoothly at the end
+*/
+function scrollToRaceHud() {
+  const hud = document.querySelector(".bet-hud");
+
+  if (!hud) return;
+
+  const topBar = document.querySelector(".top-bar");
+
+  /*
+    Adjust these two numbers to tune the final scroll position.
+    Increase extraBuffer if the HUD is still too close to the top bar.
+  */
+  const topBarHeight = topBar ? topBar.offsetHeight : 0;
+  const extraBuffer = 30;
+
+  const targetY =
+    window.scrollY +
+    hud.getBoundingClientRect().top -
+    topBarHeight -
+    extraBuffer;
+
+  smoothScrollTo(targetY, 950);
+}
+
+/*
+  Smooth scroll helper with ease-out motion.
+
+  durationMs controls how long the scroll takes.
+  Higher = slower.
+*/
+function smoothScrollTo(targetY, durationMs = 850) {
+  const startY = window.scrollY;
+  const distance = targetY - startY;
+  const startTime = performance.now();
+
+  function easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  function step(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / durationMs, 1);
+    const easedProgress = easeOutCubic(progress);
+
+    window.scrollTo(0, startY + distance * easedProgress);
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+
+/*
+  Adds/removes trifecta order badges on the car cards.
+*/
+function updateTrifectaOrderBadges() {
+  const carCards = document.querySelectorAll(".car-card");
+
+  carCards.forEach((card) => {
+    const existingBadge = card.querySelector(".trifecta-order-badge");
+    if (existingBadge) {
+      existingBadge.remove();
+    }
+
+    card.classList.remove("trifecta-active");
+
+    const carId = card.dataset.car;
+    const label = getTrifectaOrderLabelForCar(carId);
+
+    if (!label) return;
+
+    card.classList.add("trifecta-active");
+
+    const badge = document.createElement("div");
+    badge.className = "trifecta-order-badge";
+    badge.textContent = `${label} Pick`;
+
+    /*
+      Append near the top content area of the card.
+      If you already have a title/container inside the card, you can move
+      this there later.
+    */
+    card.appendChild(badge);
+  });
+}
+
+/*
+  Returns the payout multiplier for the currently selected bet type.
+
+  This is for frontend display only.
+  Backend still owns the real payout multiplier.
+*/
+function getDisplayPayoutMultiplier() {
+  if (selectedBetType === "trifecta") return 5;
+  return 2;
+}
+
+/*
+  Returns whether the current trifecta order is complete and valid.
+*/
+function isSelectedTrifectaValid() {
+  const order = [
+    selectedTrifectaOrder.first,
+    selectedTrifectaOrder.second,
+    selectedTrifectaOrder.third
+  ];
+
+  if (order.some((carId) => !carId)) return false;
+
+  return new Set(order).size === 3;
+}
+
+/*
+  Returns the selected trifecta order as an array.
+*/
+function getSelectedTrifectaOrderArray() {
+  return [
+    selectedTrifectaOrder.first,
+    selectedTrifectaOrder.second,
+    selectedTrifectaOrder.third
+  ];
+}
+
+/*
+  Updates the disabled options inside trifecta selects.
+
+  This prevents the user from selecting the same car twice.
+*/
+function updateTrifectaSelectOptions() {
+  const selects = [
+    trifectaFirstSelect,
+    trifectaSecondSelect,
+    trifectaThirdSelect
+  ];
+
+  const selectedValues = selects
+    .map((select) => select?.value)
+    .filter(Boolean);
+
+  selects.forEach((select) => {
+    if (!select) return;
+
+    Array.from(select.options).forEach((option) => {
+      if (!option.value) {
+        option.disabled = false;
+        return;
+      }
+
+      option.disabled =
+        selectedValues.includes(option.value) &&
+        select.value !== option.value;
+    });
+  });
+}
+
+/*
+  Updates the preview text under the trifecta selectors.
+*/
+function updateTrifectaPreview() {
+  if (!trifectaPreview) return;
+
+  const { first, second, third } = selectedTrifectaOrder;
+
+  if (!first && !second && !third) {
+    trifectaPreview.textContent = "Pick 1st, 2nd, and 3rd place.";
+    return;
+  }
+
+  trifectaPreview.textContent = `${first || "?"} → ${second || "?"} → ${third || "?"}`;
+}
+
+/*
+  Updates the new Race Bet Panel display.
+
+  This does not submit anything.
+  It only updates the UI based on selected bet type/stake/selection.
+*/
+function updateRaceBetPanel() {
+  const isBetLockedForRace =
+    Boolean(currentBetDetails && currentBetStatus === "confirmed");
+
+  const multiplier = getDisplayPayoutMultiplier();
+  const potentialPayout = selectedStakeAmount * multiplier;
+
+  const hasValidSelection =
+    selectedBetType === "winner"
+      ? Boolean(selectedWinnerCarId)
+      : isSelectedTrifectaValid();
+
+  if (raceBetPanel) {
+    raceBetPanel.classList.toggle("bet-panel-locked", isBetLockedForRace);
+  }
+
+  betTypeButtons.forEach((button) => {
+    button.classList.toggle(
+      "active",
+      button.dataset.betType === selectedBetType
+    );
+
+    button.disabled = isBetLockedForRace;
+  });
+
+  stakeButtons.forEach((button) => {
+    button.classList.toggle(
+      "active",
+      Number(button.dataset.stake) === selectedStakeAmount
+    );
+
+    button.disabled = isBetLockedForRace;
+  });
+
+  winnerCarButtons.forEach((button) => {
+    button.classList.toggle(
+      "active",
+      button.dataset.car === selectedWinnerCarId
+    );
+
+    button.disabled = isBetLockedForRace;
+  });
+
+  if (trifectaFirstSelect) trifectaFirstSelect.disabled = isBetLockedForRace;
+  if (trifectaSecondSelect) trifectaSecondSelect.disabled = isBetLockedForRace;
+  if (trifectaThirdSelect) trifectaThirdSelect.disabled = isBetLockedForRace;
+
+  if (winnerSelectionPanel) {
+    winnerSelectionPanel.classList.toggle(
+      "hidden",
+      selectedBetType !== "winner"
+    );
+  }
+
+  if (trifectaSelectionPanel) {
+    trifectaSelectionPanel.classList.toggle(
+      "hidden",
+      selectedBetType !== "trifecta"
+    );
+  }
+
+  if (betPanelPotentialPayout) {
+    betPanelPotentialPayout.textContent =
+      `${selectedStakeAmount} → ${potentialPayout}`;
+  }
+
+  if (betPanelBoostAccess) {
+    betPanelBoostAccess.textContent =
+      selectedBetType === "winner"
+        ? "Selected winner only"
+        : "Any car in your order";
+  }
+
+  if (placeBetBtn) {
+    placeBetBtn.disabled = isBetLockedForRace || !hasValidSelection;
+
+    placeBetBtn.textContent = isBetLockedForRace
+      ? "Bet Locked for This Race"
+      : selectedBetType === "winner"
+        ? "Place Winner Bet"
+        : "Place Trifecta Bet";
+  }
+
+  updateTrifectaSelectOptions();
+  updateTrifectaPreview();
+}
+
+/*
+  applyConfirmedBetToFrontendState()
+
+  Updates frontend state after the backend has confirmed a bet.
+
+  Works for:
+  - winner bets
+  - trifecta bets
+
+  Important:
+  For winner bets:
+  - lockedCarId is the chosen winner
+
+  For trifecta bets:
+  - selectedCarId keeps the first-place prediction for reference
+  - lockedCarId remains null so all allowed trifecta cars can stay visible
+*/
+function applyConfirmedBetToFrontendState({
+  betIntent,
+  confirmedBet,
+  fallbackBetType,
+  fallbackCarId,
+  fallbackTrifectaOrder,
+  stakeAmount
+}) {
+  const betType =
+    confirmedBet?.betType ||
+    betIntent?.betType ||
+    fallbackBetType ||
+    "winner";
+
+  const primaryCarId =
+    confirmedBet?.carId ||
+    betIntent?.carId ||
+    fallbackCarId ||
+    fallbackTrifectaOrder?.[0] ||
+    null;
+
+  const trifectaOrder =
+    confirmedBet?.trifectaOrder ||
+    betIntent?.trifectaOrder ||
+    fallbackTrifectaOrder ||
+    null;
+
+  currentBetStatus = "confirmed";
+  isSubmittingBet = false;
+
+  /*
+  Winner bet:
+  - lock the UI to the selected winner car
+
+  Trifecta bet:
+  - keep selectedCarId as the primary/first-place car for reference
+  - do NOT lock to one card, because the user can boost any car in the order
+*/
+selectedCarId = primaryCarId;
+pendingRaceStartCarId = null;
+lockedCarId = betType === "winner" ? primaryCarId : null;
+
+  if (lockedCarId) {
+    localStorage.setItem("lockedCarId", lockedCarId);
+  }
+  else {
+    localStorage.removeItem("lockedCarId");
+  }
+
+  currentBetId = betIntent.betId;
+
+  currentBetDetails = {
+    id: betIntent.betId,
+    race_id: betIntent.raceId,
+    cycle_id: betIntent.cycleId,
+
+    bet_type: betType,
+    car_id: primaryCarId,
+
+    trifecta_first_car_id: trifectaOrder ? trifectaOrder[0] : null,
+    trifecta_second_car_id: trifectaOrder ? trifectaOrder[1] : null,
+    trifecta_third_car_id: trifectaOrder ? trifectaOrder[2] : null,
+
+    token_symbol: betIntent.tokenSymbol,
+    stake_amount: stakeAmount,
+    payout_multiplier: betIntent.payoutMultiplier,
+    potential_payout: betIntent.potentialPayout,
+    status: "confirmed"
+  };
+
+  /*
+    Confirmed bet response should include the backend-created
+    internal boost tokens.
+
+    Expected after confirmation:
+    3 / 3 reserved
+  */
+  if (confirmedBet?.boostTokens) {
+    currentBoostTokens = confirmedBet.boostTokens;
+    updateBoostStrategyHud();
+  }
+
+  updateHud();
+  updateBoostStrategyHud();
+  applyCarSelectionUI();
+  updateRaceBetPanel();
+  updateStartRaceButton();
+
+  if (betType === "trifecta" && trifectaOrder) {
+    boostTimer.textContent =
+      `Trifecta submitted: ${trifectaOrder.join(" → ")}`;
+  } else {
+    boostTimer.textContent =
+      `Bet submitted: ${stakeAmount} ${betIntent.tokenSymbol} on ${primaryCarId}`;
+  }
+
+  /*
+    Once the bet is locked, move the user down to the race HUD.
+  */
+  scrollToRaceHud();
+}
+
+/*
+  Formats wallet balance for compact top-bar display.
+*/
+function formatWalletBalance(balance) {
+  if (balance === null || balance === undefined || Number.isNaN(balance)) {
+    return "—";
+  }
+
+  return Number(balance).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4
+  });
+}
+
+/*
+  Converts wallet / Solana transaction errors into friendlier UI messages.
+*/
+function getFriendlyWalletErrorMessage(error) {
+  const rawMessage = String(
+    error?.message ||
+    error?.toString?.() ||
+    ""
+  );
+
+  const lowerMessage = rawMessage.toLowerCase();
+
+  /*
+    Common insufficient-funds wording can vary depending on Phantom,
+    Solana Web3.js, or the RPC response.
+  */
+  if (
+    lowerMessage.includes("insufficient") ||
+    lowerMessage.includes("insufficient funds") ||
+    lowerMessage.includes("attempt to debit an account but found no record of a prior credit") ||
+    lowerMessage.includes("custom program error") && lowerMessage.includes("0x1") ||
+    lowerMessage.includes("0x1")
+  ) {
+    return "Insufficient funds. Your wallet does not have enough SOL to cover this bet and the network fee.";
+  }
+
+  if (
+    lowerMessage.includes("user rejected") ||
+    lowerMessage.includes("rejected") ||
+    lowerMessage.includes("cancelled") ||
+    lowerMessage.includes("canceled")
+  ) {
+    return "Transaction cancelled. Your bet was not placed.";
+  }
+
+  if (
+    lowerMessage.includes("blockhash not found") ||
+    lowerMessage.includes("transaction expired")
+  ) {
+    return "Transaction expired. Please try placing the bet again.";
+  }
+
+  return error?.message || "Unexpected wallet error. Please try again.";
+}
+
+/*
+  Shows the styled result modal when another car wins the boost.
+
+  This is only meant to appear if:
+  - the user had selected a car
+  - the winning car is different from the user's car
+  - the popup has not already been shown for this cycle
+*/
+let boostToastTimeout = null;
+
+function showBoostResultModal(winnerCarId) {
+  if (!boostResultModal || !boostResultText) return;
+
+  boostResultText.textContent = `${winnerCarId} took the boost this round.`;
+  boostResultModal.classList.remove("hidden");
+  boostResultModal.setAttribute("aria-hidden", "false");
+
+  clearTimeout(boostToastTimeout);
+  boostToastTimeout = setTimeout(() => {
+    hideBoostResultModal();
+  }, 3500);
+}
+
+/*
+  Hides the modal and restores it to its hidden state.
+*/
+function hideBoostResultModal() {
+  if (!boostResultModal) return;
+
+  clearTimeout(boostToastTimeout);
+  boostResultModal.classList.add("hidden");
+  boostResultModal.setAttribute("aria-hidden", "true");
+}
+
+// Returns the DOM card for a given car ID.
+function getCarCardByCarId(carId) {
+  return (
+    Array.from(document.querySelectorAll(".car-card")).find(
+      (card) => card.dataset.car === carId
+    ) || null
+  );
+}
+
+// Removes boost flame effect from all car images.
+function clearAllBoostFlames() {
+  document.querySelectorAll(".car-image").forEach((image) => {
+    image.classList.remove("boost-active");
+  });
+}
+
+/*
+  applyCarSelectionUI()
+
+  Controls which car cards are visible after a bet is confirmed.
+
+  Winner bet:
+  - show only selected winner car
+
+  Trifecta bet:
+  - show all cars in the trifecta order
+  - with 3 cars, this means all 3 cards stay visible
+
+  It also controls whether Boost buttons are hidden or visible depending
+  on race state.
+*/
+function applyCarSelectionUI() {
+  const allCarCards = document.querySelectorAll(".car-card");
+  const carsGrid = document.querySelector(".cars-grid");
+
+  const betType = getCurrentBetType();
+  const hasConfirmedBet =
+    currentBetDetails && currentBetStatus === "confirmed";
+
+  allCarCards.forEach((carCard) => {
+    const carId = carCard.dataset.car;
+    const button = carCard.querySelector(".boost-btn");
+
+    if (!button) return;
+
+    /*
+      No confirmed bet yet:
+      show all cards, hide boost buttons.
+    */
+    if (!hasConfirmedBet) {
+      carCard.classList.remove("hidden");
+
+      button.classList.add("hidden");
+      button.disabled = false;
+      button.textContent = "Boost";
+
+      return;
+    }
+
+    /*
+      Winner bet:
+      show only selected winner car.
+    */
+    if (betType === "winner") {
+      if (currentBetDetails.car_id === carId) {
+        carCard.classList.remove("hidden");
+      } else {
+        carCard.classList.add("hidden");
+      }
+    }
+
+    /*
+      Trifecta bet:
+      show every car in the trifecta order.
+      Since there are only 3 cars, this should show all 3.
+    */
+    else if (betType === "trifecta") {
+      if (isCarAllowedForCurrentBet(carId)) {
+        carCard.classList.remove("hidden");
+      } else {
+        carCard.classList.add("hidden");
+      }
+    }
+
+    /*
+      Idle:
+      confirmed bet exists, but race has not started yet.
+      Keep cards visible, but no boost button yet.
+    */
+    if (currentState === "idle") {
+      button.classList.add("hidden");
+      button.disabled = true;
+      button.textContent = "Boost";
+    }
+
+    /*
+      Starting:
+      race countdown is running.
+      Show boost button position, but keep it locked.
+    */
+    else if (currentState === "starting") {
+      button.classList.remove("hidden");
+      button.disabled = true;
+      button.textContent = "Boost Locked";
+    }
+
+    /*
+      Voting/finalizing/boost:
+      show the button.
+      renderStateFromBackend() decides whether it is enabled,
+      submitted, locked, boosting, etc.
+    */
+    else {
+      button.classList.remove("hidden");
+    }
+  });
+
+  const visibleCards = Array.from(allCarCards).filter(
+    (card) => !card.classList.contains("hidden")
+  );
+
+  carsGrid?.classList.toggle("single-car-view", visibleCards.length === 1);
+
+  updateTrifectaOrderBadges();
+}
+
+/*
+  renderIdleUI()
+
+  Resets the car section back to its default pre-race / idle layout.
+
+  What it restores:
+  - removes the enlarged single-car layout
+  - shows all car cards again
+  - hides all Boost buttons
+  - resets button state and text
+
+  This is used when the app returns to idle so the user sees the full
+  starting selection screen again rather than the stripped-down chosen-car view.
+*/
+function renderIdleUI() {
+  // Return the grid to its normal multi-car layout.
+  document.querySelector(".cars-grid")?.classList.remove("single-car-view");
+
+  document.querySelectorAll(".car-card").forEach((carCard) => {
+    carCard.classList.remove("hidden");
+
+    const button = carCard.querySelector(".boost-btn");
+
+    // Hide the Boost button and reset its state.
+    if (button) {
+      button.classList.add("hidden");
+      button.disabled = false;
+      button.textContent = "Boost";
+    }
+  });
+
+  updateStartRaceButton();
+
+  boostTimer.textContent = "Select a car to start the race";
+}
+
+/*
+  resetRaceBetPanelForNextRace()
+
+  Resets and unlocks the central Race Bet Panel after a race is complete.
+
+  This allows the user to:
+  - choose Winner or Trifecta again
+  - choose a new stake
+  - choose a new winner car
+  - choose a new trifecta order
+*/
+function resetRaceBetPanelForNextRace() {
+  selectedBetType = "winner";
+  selectedStakeAmount = 1;
+  selectedWinnerCarId = null;
+
+  selectedTrifectaOrder = {
+    first: "",
+    second: "",
+    third: ""
+  };
+
+  if (trifectaFirstSelect) trifectaFirstSelect.value = "";
+  if (trifectaSecondSelect) trifectaSecondSelect.value = "";
+  if (trifectaThirdSelect) trifectaThirdSelect.value = "";
+
+  if (raceBetPanel) {
+    raceBetPanel.classList.remove("bet-panel-locked");
+  }
+
+  updateRaceBetPanel();
+}
+
+/*
+  resetRaceSelection()
+
+  Clears all round-specific frontend state.
+  Called only when a race has actually returned to idle after running.
+
+  Also closes the result modal so it does not hang around between rounds.
+*/
+function resetRaceSelection() {
+  selectedCarId = null;
+  pendingRaceStartCarId = null;
+  lockedCarId = null;
+
+  currentVoteIntentId = null;
+  votedCycleId = null;
+  isSubmittingVote = false;
+  submittingVoteCycleId = null;
+  shownBoostResultCycleId = null;
+
+  // Clear old bet state from the completed race.
+  currentBetId = null;
+  currentBetStatus = null;
+  currentBetDetails = null;
+  isSubmittingBet = false;
+
+  hideBoostResultModal();
+
+  localStorage.removeItem("lockedCarId");
+  localStorage.removeItem("votedCycleId");
+
+  /*
+    Unlock and reset the new Race Bet Panel for the next race.
+  */
+  resetRaceBetPanelForNextRace();
+
+  updateHud();
+  updateRaceBetPanel();
+  applyCarSelectionUI();
+  updateBoostStrategyHud();
+}
+
+/*
+  Returns true if the browser has an injected Solana wallet.
+
+  Phantom, Solflare, and other Solana wallets may expose themselves through
+  window.solana. For this first devnet step, we keep it simple and use that
+  provider directly.
+*/
+function hasInjectedSolanaWallet() {
+  return typeof window !== "undefined" && Boolean(window.solana);
+}
+
+/*
+  Returns the active wallet ID that should be sent to the backend.
+
+  Demo mode:
+  - use the existing generated DEMO_WALLET
+
+  Devnet mode:
+  - use the connected wallet public key
+*/
+function getActiveWallet() {
+  if (appConfig.appMode === "devnet") {
+    return connectedWalletPublicKey;
+  }
+
+  return DEMO_WALLET;
+}
+
+/*
+  Fetches the connected wallet's Devnet SOL balance.
+
+  This is read-only. It does not require a transaction signature.
+*/
+async function refreshWalletBalance() {
+  if (appConfig.appMode !== "devnet") {
+    connectedWalletBalance = null;
+    updateWalletButton();
+    return;
+  }
+
+  if (!connectedWalletPublicKey) {
+    connectedWalletBalance = null;
+    updateWalletButton();
+    return;
+  }
+
+  if (!window.solanaWeb3) {
+    connectedWalletBalance = null;
+    updateWalletButton();
+    return;
+  }
+
+  try {
+    const web3 = window.solanaWeb3;
+
+    const connection = new web3.Connection(
+      appConfig.solanaRpcUrl,
+      "confirmed"
+    );
+
+    const publicKey = new web3.PublicKey(connectedWalletPublicKey);
+    const lamports = await connection.getBalance(publicKey, "confirmed");
+
+    connectedWalletBalance = lamports / web3.LAMPORTS_PER_SOL;
+  } catch (error) {
+    console.error("Failed to refresh wallet balance:", error);
+    connectedWalletBalance = null;
+  } finally {
+    updateWalletButton();
+  }
+}
+
+/*
+  Updates the wallet button text based on the current mode and connection state.
+*/
+function updateWalletButton() {
+  if (!connectWalletBtn) return;
+
+  if (appConfig.appMode === "demo") {
+    connectWalletBtn.textContent = "Demo Wallet";
+    connectWalletBtn.disabled = false;
+    return;
+  }
+
+  if (isWalletConnecting) {
+    connectWalletBtn.textContent = "Connecting...";
+    connectWalletBtn.disabled = true;
+    return;
+  }
+
+  if (connectedWalletPublicKey) {
+    /*
+      Show a shortened wallet address plus wallet balance.
+
+      Devnet v1:
+      - balance is shown in SOL
+
+      Later:
+      - this can become $BOOST once SPL token balance reading is added.
+    */
+    const start = connectedWalletPublicKey.slice(0, 4);
+    const end = connectedWalletPublicKey.slice(-4);
+    const shortWallet = `${start}...${end}`;
+
+    const balanceText =
+      connectedWalletBalance === null
+        ? "Balance: —"
+        : `${formatWalletBalance(connectedWalletBalance)} ${appConfig.tokenSymbol || "SOL"}`;
+
+    connectWalletBtn.textContent = `${shortWallet} | ${balanceText}`;
+    connectWalletBtn.disabled = false;
+    return;
+  }
+
+  connectWalletBtn.textContent = "Connect Wallet";
+  connectWalletBtn.disabled = false;
+}
+
+/*
+  Connects to an injected Solana wallet.
+
+  This is devnet-mode only.
+  It does not send transactions yet.
+*/
+async function connectSolanaWallet() {
+  if (appConfig.appMode !== "devnet") {
+    alert("Demo mode is active. Real wallet connection is only used in devnet mode.");
+    return;
+  }
+
+  if (!hasInjectedSolanaWallet()) {
+    alert("No Solana wallet found. Install Phantom or Solflare, then refresh.");
+    return;
+  }
+
+  try {
+    isWalletConnecting = true;
+    updateWalletButton();
+
+    /*
+      Only wallet connection belongs inside this try/catch.
+
+      If this succeeds, connectedWalletPublicKey is set.
+    */
+    const response = await window.solana.connect();
+
+    connectedWalletPublicKey = response.publicKey.toString();
+
+    await refreshWalletBalance();
+    await refreshHudData();
+
+  } catch (error) {
+    console.error("Wallet connection failed:", error);
+    alert("Wallet connection was cancelled or failed.");
+    return;
+  } finally {
+    isWalletConnecting = false;
+    updateWalletButton();
+  }
+
+  /*
+    Refresh HUD after wallet connection, but do not treat HUD/backend issues
+    as wallet connection failures.
+  */
+  try {
+    await refreshHudData();
+  } catch (error) {
+    console.error("HUD refresh after wallet connect failed:", error);
+    updateHud();
+  }
+}
+
+/*
+  Attempts to reconnect silently if the wallet was already trusted.
+
+  This avoids forcing the wallet popup every page refresh.
+*/
+async function trySilentWalletReconnect() {
+  if (appConfig.appMode !== "devnet") return;
+  if (!hasInjectedSolanaWallet()) return;
+
+  try {
+    const reconnectTimeoutMs = 3000;
+
+    const response = await Promise.race([
+      window.solana.connect({ onlyIfTrusted: true }),
+
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error("Silent wallet reconnect timed out"));
+        }, reconnectTimeoutMs);
+      })
+    ]);
+
+    connectedWalletPublicKey = response.publicKey.toString();
+
+    await refreshWalletBalance();
+    await refreshHudData();
+
+    try {
+      await refreshHudData();
+    } catch (error) {
+      console.error("HUD refresh after silent reconnect failed:", error);
+      updateHud();
+    }
+  } catch {
+    connectedWalletPublicKey = null;
+    connectedWalletBalance = null;
+    updateWalletButton();
+    updateHud();
+  } finally {
+    updateWalletButton();
+  }
+}
+
+/*
+  Shows a temporary bet/payment status in the top bar.
+
+  This is used while the wallet/payment flow is still in progress,
+  before the backend has confirmed the bet.
+*/
+function setBetPendingMessage(message) {
+  if (!boostTimer) return;
+  boostTimer.textContent = message;
+}
+
+/*
+  Returns true only when this browser/wallet has a confirmed bet
+  for the current race.
+
+  Start Race should only be clickable after this is true.
+*/
+function userHasConfirmedBet() {
+  return currentBetStatus === "confirmed" && currentBetId !== null;
+}
+
+/*
+  Central place to control the Start Race button.
+
+  Rules:
+  - idle + confirmed bet = enabled
+  - idle + no confirmed bet = disabled
+  - starting/active race = disabled
+*/
+function updateStartRaceButton() {
+  if (!startRaceBtn) return;
+
+  if (currentState === "idle" && userHasConfirmedBet()) {
+    startRaceBtn.disabled = false;
+    startRaceBtn.textContent = "Start Race";
+    return;
+  }
+
+  if (currentState === "starting") {
+    startRaceBtn.disabled = true;
+    startRaceBtn.textContent = "Race Starting";
+    return;
+  }
+
+  if (
+    currentState === "voting" ||
+    currentState === "finalizing" ||
+    currentState === "boost"
+  ) {
+    startRaceBtn.disabled = true;
+    startRaceBtn.textContent = "Race Active";
+    return;
+  }
+
+  startRaceBtn.disabled = true;
+  startRaceBtn.textContent = "Start Race";
+}
+
+/*
+  Returns a short middle-truncated string for long values like wallets.
+*/
+function shortenMiddle(value, start = 4, end = 4) {
+  if (!value || typeof value !== "string") return "—";
+  if (value.length <= start + end + 3) return value;
+  return `${value.slice(0, start)}...${value.slice(-end)}`;
+}
+
+/*
+  Converts backend status values into friendly display text.
+*/
+function formatStatusLabel(status) {
+  switch (status) {
+    case "pending_payment":
+      return "Pending";
+    case "confirmed":
+      return "Confirmed";
+    case "won":
+      return "Won";
+    case "lost":
+      return "Lost";
+    case "refunded":
+      return "Refunded";
+    case "completed":
+      return "Completed";
+    case "cancelled":
+      return "Cancelled";
+    case "invalid":
+      return "Invalid";
+    default:
+      return "—";
+  }
+}
+
+/*
+  Returns the CSS status class to apply to HUD status pills.
+*/
+function getStatusClass(status) {
+  switch (status) {
+    case "pending_payment":
+      return "status-pending";
+    case "confirmed":
+      return "status-confirmed";
+    case "won":
+      return "status-won";
+    case "lost":
+      return "status-lost";
+    case "refunded":
+      return "status-refunded";
+    default:
+      return "";
+  }
+}
+
+/*
+  Formats the boost-token balance for the HUD.
+
+  Examples:
+  - no bet yet: —
+  - bet confirmed but race not started: 3 / 3 reserved
+  - race active: 2 / 3 active
+  - tokens used: 0 / 3 active
+*/
+function formatBoostTokens(boostTokens) {
+  if (!boostTokens) {
+    return "—";
+  }
+
+  const remaining = Number(boostTokens.remaining ?? 0);
+  const granted = Number(boostTokens.granted ?? 0);
+  const status = boostTokens.status || "—";
+
+  return `${remaining} / ${granted} ${status}`;
+}
+
+/*
+  Updates the Boost Strategy HUD panel.
+
+  This displays backend-owned token state and live boost power.
+*/
+function updateBoostStrategyHud() {
+  if (hudBoostTokens) {
+    hudBoostTokens.textContent = formatBoostTokens(currentBoostTokens);
+  }
+
+  if (hudBoostPowerCar1) {
+    hudBoostPowerCar1.textContent =
+      currentBoostPower["Car 1"] === null ? "—" : `${currentBoostPower["Car 1"]}%`;
+  }
+
+  if (hudBoostPowerCar2) {
+    hudBoostPowerCar2.textContent =
+      currentBoostPower["Car 2"] === null ? "—" : `${currentBoostPower["Car 2"]}%`;
+  }
+
+  if (hudBoostPowerCar3) {
+    hudBoostPowerCar3.textContent =
+      currentBoostPower["Car 3"] === null ? "—" : `${currentBoostPower["Car 3"]}%`;
+  }
+}
+
+/*
+  Applies text + status class to a HUD status field.
+*/
+function setHudStatus(el, status) {
+  if (!el) return;
+
+  el.textContent = formatStatusLabel(status);
+
+  el.classList.remove(
+    "status-pending",
+    "status-confirmed",
+    "status-won",
+    "status-lost",
+    "status-refunded"
+  );
+
+  const nextClass = getStatusClass(status);
+  if (nextClass) {
+    el.classList.add(nextClass);
+  }
+}
+
+/*
+  Formats the settlement line for the latest result panel.
+*/
+function formatSettlementValue(bet) {
+  if (!bet) return "—";
+
+  if (bet.status === "won") {
+    return `+${bet.potential_payout} ${bet.token_symbol}`;
+  }
+
+  if (bet.status === "refunded") {
+    return `Refunded ${bet.stake_amount} ${bet.token_symbol}`;
+  }
+
+  if (bet.status === "lost") {
+    return `-${bet.stake_amount} ${bet.token_symbol}`;
+  }
+
+  return "—";
+}
+
+/*
+  Formats the official finishing order from the race result.
+
+  Example:
+    Car 2 → Car 3 → Car 1
+*/
+function formatFinishOrderForHud(bet) {
+  if (!bet) return "—";
+
+  const order = [
+    bet.first_car_id,
+    bet.second_car_id,
+    bet.third_car_id
+  ].filter(Boolean);
+
+  return order.length ? order.join(" → ") : "—";
+}
+
+/*
+  Formats the current bet selection for the HUD.
+
+  Winner example:
+    Car 2 to win
+
+  Trifecta example:
+    Car 2 → Car 1 → Car 3
+*/
+function formatBetSelectionForHud(bet) {
+  if (!bet) return "—";
+
+  if (bet.bet_type === "trifecta") {
+    const order = [
+      bet.trifecta_first_car_id,
+      bet.trifecta_second_car_id,
+      bet.trifecta_third_car_id
+    ].filter(Boolean);
+
+    return order.length ? order.join(" → ") : "—";
+  }
+
+  return bet.car_id ? `${bet.car_id} to win` : "—";
+}
+
+/*
+  Formats the bet type for the HUD.
+*/
+function formatBetTypeForHud(bet) {
+  if (!bet) return "—";
+  return bet.bet_type === "trifecta" ? "Trifecta" : "Winner";
+}
+
+/*
+  Renders the betting HUD from frontend state.
+
+  Panel 1:
+  - current active bet
+
+  Panel 2:
+  - most recent settled result
+
+  Panel 3:
+  - app/wallet info
+*/
+function updateHud() {
+  const activeWallet = getActiveWallet();
+
+  // ----------------------------------------------------------
+  // SYSTEM PANEL
+  // ----------------------------------------------------------
+  if (hudAppMode) {
+    hudAppMode.textContent = appConfig.appMode?.toUpperCase() || "—";
+  }
+
+  if (hudNetwork) {
+    hudNetwork.textContent = appConfig.solanaCluster || "—";
+  }
+
+  if (hudTokenSymbol) {
+    hudTokenSymbol.textContent = appConfig.tokenSymbol || "—";
+  }
+
+  if (hudWallet) {
+    hudWallet.textContent = activeWallet ? shortenMiddle(activeWallet) : "Not connected";
+  }
+
+  // ----------------------------------------------------------
+  // CURRENT BET PANEL
+  // ----------------------------------------------------------
+  if (currentBetDetails) {
+    if (hudCurrentRaceId) {
+      hudCurrentRaceId.textContent = currentBetDetails.race_id ?? "—";
+    }
+
+    if (hudSelectedCar) {
+      hudSelectedCar.textContent = currentBetDetails.car_id ?? "—";
+    }
+
+    if (hudStakeAmount) {
+      hudStakeAmount.textContent = `${currentBetDetails.stake_amount} ${currentBetDetails.token_symbol}`;
+    }
+
+    if (hudPotentialPayout) {
+      hudPotentialPayout.textContent = `${currentBetDetails.potential_payout} ${currentBetDetails.token_symbol}`;
+    }
+
+    setHudStatus(hudBetStatus, currentBetDetails.status);
+  } else {
+    if (hudCurrentRaceId) hudCurrentRaceId.textContent = "—";
+    if (hudSelectedCar) hudSelectedCar.textContent = "—";
+    if (hudStakeAmount) hudStakeAmount.textContent = "—";
+    if (hudPotentialPayout) hudPotentialPayout.textContent = "—";
+    setHudStatus(hudBetStatus, null);
+  }
+
+  /*
+  Update bet type and selection in the Bet Slip HUD.
+*/
+if (hudBetType) {
+  hudBetType.textContent = formatBetTypeForHud(currentBetDetails);
+}
+
+if (hudSelectedCar) {
+  hudSelectedCar.textContent = formatBetSelectionForHud(currentBetDetails);
+}
+
+  // ----------------------------------------------------------
+  // LATEST RESULT PANEL
+  // ----------------------------------------------------------
+  if (latestSettledBetDetails) {
+    if (hudResultRaceId) {
+      hudResultRaceId.textContent = latestSettledBetDetails.race_id ?? "—";
+    }
+
+    if (hudRaceOutcome) {
+      hudRaceOutcome.textContent = formatStatusLabel(
+        latestSettledBetDetails.race_result_status
+      );
+    }
+
+    if (hudWinningCar) {
+      hudWinningCar.textContent = latestSettledBetDetails.winning_car_id || "—";
+    }
+
+    if (hudFinishOrder) {
+      hudFinishOrder.textContent =
+        formatFinishOrderForHud(latestSettledBetDetails);
+    }
+
+    setHudStatus(hudYourResult, latestSettledBetDetails.status);
+
+    if (hudSettlement) {
+      hudSettlement.textContent = formatSettlementValue(latestSettledBetDetails);
+    }
+  } else {
+    if (hudResultRaceId) hudResultRaceId.textContent = "—";
+    if (hudRaceOutcome) hudRaceOutcome.textContent = "—";
+    if (hudWinningCar) hudWinningCar.textContent = "—";
+    if (hudFinishOrder) hudFinishOrder.textContent = "—";
+    setHudStatus(hudYourResult, null);
+    if (hudSettlement) hudSettlement.textContent = "—";
+  }
+}
+
+/*
+  Returns the active bet type from current bet details.
+*/
+function getCurrentBetType() {
+  return currentBetDetails?.bet_type || null;
+}
+
+/*
+  Returns the cars that are allowed to receive a boost for the current bet.
+
+  Winner:
+    [selected winner car]
+
+  Trifecta:
+    [first, second, third]
+*/
+function getAllowedBoostCarsForCurrentBet() {
+  if (!currentBetDetails) return [];
+
+  if (currentBetDetails.bet_type === "trifecta") {
+    return [
+      currentBetDetails.trifecta_first_car_id,
+      currentBetDetails.trifecta_second_car_id,
+      currentBetDetails.trifecta_third_car_id
+    ].filter(Boolean);
+  }
+
+  return currentBetDetails.car_id ? [currentBetDetails.car_id] : [];
+}
+
+/*
+  Returns whether the given car is allowed to be boosted for the current bet.
+*/
+function isCarAllowedForCurrentBet(carId) {
+  return getAllowedBoostCarsForCurrentBet().includes(carId);
+}
+
+/*
+  Returns a trifecta order label for display on a car card.
+
+  Example:
+    Car 2 => "1st"
+    Car 1 => "2nd"
+    Car 3 => "3rd"
+*/
+function getTrifectaOrderLabelForCar(carId) {
+  if (!currentBetDetails || currentBetDetails.bet_type !== "trifecta") {
+    return null;
+  }
+
+  if (currentBetDetails.trifecta_first_car_id === carId) return "1st";
+  if (currentBetDetails.trifecta_second_car_id === carId) return "2nd";
+  if (currentBetDetails.trifecta_third_car_id === carId) return "3rd";
+
+  return null;
+}
+
+/*
+  ============================================================
+  DEVNET SOL PAYMENT HELPERS
+  ============================================================
+
+  First devnet payment version:
+  - uses SOL, not SPL tokens yet
+  - sends a small Devnet SOL transfer from the connected wallet
+    to the treasury wallet from /api/config
+  - returns the transaction signature so the backend can record it
+
+  Later:
+  - we will verify the signature on the backend
+  - then we can swap SOL transfers for SPL token transfers
+*/
+
+/*
+  Sends a Devnet SOL payment for a bet.
+
+  This should trigger the Phantom transaction approval popup.
+*/
+async function sendDevnetBetPayment(stakeAmount) {
+
+  if (appConfig.appMode !== "devnet") {
+    throw new Error("Devnet payment called while not in devnet mode");
+  }
+
+  if (!connectedWalletPublicKey) {
+    throw new Error("Connect your wallet before placing a devnet bet");
+  }
+
+  if (!appConfig.treasuryWallet) {
+    throw new Error("Treasury wallet is not configured");
+  }
+
+  if (!window.solana) {
+    throw new Error("No Solana wallet found");
+  }
+
+  if (!window.solanaWeb3) {
+    throw new Error("Solana Web3.js is not loaded");
+  }
+
+  /*
+    Use the browser bundle directly from window so we do not rely on
+    a global variable name that may not exist in every browser.
+  */
+  const web3 = window.solanaWeb3;
+
+  const connection = new web3.Connection(
+    appConfig.solanaRpcUrl,
+    "confirmed"
+  );
+
+  const fromPubkey = new web3.PublicKey(connectedWalletPublicKey);
+const toPubkey = new web3.PublicKey(appConfig.treasuryWallet);
+
+const lamports = Math.round(stakeAmount * 0.001 * web3.LAMPORTS_PER_SOL);
+
+/*
+  Pre-check wallet balance before asking Phantom to approve the transaction.
+
+  This gives the user a clear error instead of a vague wallet/RPC failure.
+  We include a small estimated fee buffer so users do not spend their full
+  balance and fail on the network fee.
+*/
+const currentLamports = await connection.getBalance(fromPubkey, "confirmed");
+const estimatedFeeLamports = 5000;
+const totalRequiredLamports = lamports + estimatedFeeLamports;
+
+if (currentLamports < totalRequiredLamports) {
+  const currentSol = currentLamports / web3.LAMPORTS_PER_SOL;
+  const requiredSol = totalRequiredLamports / web3.LAMPORTS_PER_SOL;
+
+  throw new Error(
+    `Insufficient funds. You need at least ${requiredSol.toFixed(6)} SOL for this bet and network fee, but your wallet has ${currentSol.toFixed(6)} SOL.`
+  );
+}
+
+  const transaction = new web3.Transaction().add(
+    web3.SystemProgram.transfer({
+      fromPubkey,
+      toPubkey,
+      lamports
+    })
+  );
+
+  const latestBlockhash = await connection.getLatestBlockhash("confirmed");
+
+  transaction.recentBlockhash = latestBlockhash.blockhash;
+  transaction.feePayer = fromPubkey;
+
+  const result = await window.solana.signAndSendTransaction(transaction);
+
+  const signature =
+    typeof result === "string" ? result : result.signature;
+
+  const confirmation = await connection.confirmTransaction(
+    {
+      signature,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+    },
+    "confirmed"
+  );
+
+  if (confirmation.value.err) {
+    console.error("Devnet transaction failed:", confirmation.value.err);
+    throw new Error("Devnet transaction failed or was reverted");
+  }
+
+  return signature;
+  }
+
+/*
+  ============================================================
+  BACKEND REQUEST HELPERS
+  ============================================================
+*/
+
+// Fetch current cycle state from backend.
+async function fetchCurrentCycle() {
+  const res = await fetch(`${API_BASE}/cycle/current?ts=${Date.now()}`, {
+    cache: "no-store"
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch current cycle");
+  }
+
+  return data;
+}
+
+// Start race from idle.
+async function startRace() {
+  const res = await fetch(`${API_BASE}/race/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    }
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to start race");
+  }
+
+  return data;
+}
+
+/*
+  Creates a pending bet intent on the backend.
+
+  Supports both:
+  - winner bets
+  - trifecta bets
+
+  Winner request:
+  {
+    wallet,
+    betType: "winner",
+    carId,
+    stakeAmount
+  }
+
+  Trifecta request:
+  {
+    wallet,
+    betType: "trifecta",
+    trifectaOrder: ["Car 2", "Car 1", "Car 3"],
+    stakeAmount
+  }
+
+  Backend is still the source of truth for:
+  - payout multiplier
+  - valid bet type
+  - valid car selection
+  - one bet per wallet per race
+*/
+async function createBetIntent({
+  wallet,
+  betType,
+  carId = null,
+  trifectaOrder = null,
+  stakeAmount
+}) {
+  const body = {
+    wallet,
+    betType,
+    stakeAmount
+  };
+
+  if (betType === "winner") {
+    body.carId = carId;
+  }
+
+  if (betType === "trifecta") {
+    body.trifectaOrder = trifectaOrder;
+  }
+
+  const res = await fetch(`${API_BASE}/bet-intent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to create bet intent");
+  }
+
+  return data;
+}
+
+/*
+  Submits the bet payment proof.
+
+  Demo mode:
+  - uses fake mock transaction signatures
+
+  Devnet mode:
+  - sends a real Devnet SOL transfer
+  - sends the real transaction signature to the backend
+*/
+
+async function submitBet(betId, wallet, stakeAmount) {
+
+  let paymentTxSignature;
+  let messageSignature;
+
+  if (appConfig.appMode === "devnet") {
+    /*
+      Real Devnet payment.
+
+      This is the part that should trigger the Phantom approval popup.
+      If you are not seeing the popup, this branch is probably not running.
+    */
+
+    paymentTxSignature = await sendDevnetBetPayment(stakeAmount);
+
+    /*
+      Temporary placeholder.
+      Later we can replace this with a signed message or memo.
+    */
+    messageSignature = `devnet_msg_${Date.now()}`;
+  } else {
+    /*
+      Existing demo behaviour.
+    */
+    paymentTxSignature = `mock_bet_tx_${Date.now()}`;
+    messageSignature = `mock_bet_msg_${Date.now()}`;
+  }
+
+  const res = await fetch(`${API_BASE}/bet-submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      betId,
+      wallet,
+      paymentTxSignature,
+      messageSignature
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to submit bet");
+  }
+
+  return data;
+}
+
+/*
+  Fetches this wallet's current bet for the active race.
+  Useful after refresh so the UI can recover the user's bet state.
+*/
+async function fetchCurrentBet(wallet) {
+  const res = await fetch(
+    `${API_BASE}/bet/current?wallet=${encodeURIComponent(wallet)}`,
+    {
+      cache: "no-store"
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch current bet");
+  }
+
+  return data.bet;
+}
+
+/*
+  Restore this wallet's confirmed/current bet from the backend.
+
+  Backend is the source of truth.
+
+  This prevents stale localStorage from deciding whether the UI should show
+  the selected-car screen.
+*/
+async function restoreCurrentBetFromBackend() {
+  const activeWallet = getActiveWallet();
+
+  /*
+    In devnet mode, the wallet may not be connected yet.
+    If there is no active wallet, clear local selected-car state.
+  */
+  if (!activeWallet) {
+    currentBetId = null;
+    currentBetStatus = null;
+    currentBetDetails = null;
+    selectedCarId = null;
+    pendingRaceStartCarId = null;
+    lockedCarId = null;
+    localStorage.removeItem("lockedCarId");
+    return;
+  }
+
+  const bet = await fetchCurrentBet(activeWallet);
+  currentBetDetails = bet || null;
+
+  /*
+    No current bet for this wallet/race.
+    Clear local selected-card state.
+  */
+  if (!bet) {
+    currentBetId = null;
+    currentBetStatus = null;
+    selectedCarId = null;
+    pendingRaceStartCarId = null;
+    lockedCarId = null;
+    localStorage.removeItem("lockedCarId");
+    return;
+  }
+
+  /*
+    Only confirmed bets should lock the UI into selected-car view.
+
+    Pending payments should not lock the user because wallet transactions can
+    be cancelled, fail, or be retried.
+  */
+  if (bet.status !== "confirmed") {
+    currentBetId = bet.id;
+    currentBetStatus = bet.status;
+    selectedCarId = null;
+    pendingRaceStartCarId = null;
+    lockedCarId = null;
+    localStorage.removeItem("lockedCarId");
+    return;
+  }
+
+  /*
+  For winner bets, bet.car_id is the selected winner.
+
+  For trifecta bets, bet.car_id is currently the first-place prediction.
+  Later, when trifecta boost UI is added, the UI will need to show/enable
+  all cars in the trifecta order.
+*/
+  currentBetId = bet.id;
+  currentBetStatus = bet.status;
+  /*
+    Restore winner/trifecta UI correctly.
+
+    Winner:
+    - lock to one selected winner car
+
+    Trifecta:
+    - keep the first-place car as selectedCarId
+    - do not lock to one single visible card
+  */
+  selectedCarId = bet.car_id;
+  pendingRaceStartCarId = null;
+  lockedCarId = bet.bet_type === "winner" ? bet.car_id : null;
+
+  localStorage.setItem("lockedCarId", lockedCarId);
+}
+
+// Create vote intent.
+// Backend stores wallet + cycle + car selection and returns an intent ID.
+async function createVoteIntent(wallet, carId) {
+  const res = await fetch(`${API_BASE}/vote-intent`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ wallet, carId })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to create vote intent");
+  }
+
+  return data;
+}
+
+// Submit vote against an existing intent.
+// For demo mode, signatures are fake placeholders.
+// Later this is where real wallet signature / tx data will be sent.
+async function submitVote(intentId, wallet) {
+  const fakeTxSignature = `mock_tx_${Date.now()}`;
+  const fakeMessageSignature = `mock_msg_${Date.now()}`;
+
+  const res = await fetch(`${API_BASE}/vote-submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      intentId,
+      wallet,
+      txSignature: fakeTxSignature,
+      messageSignature: fakeMessageSignature
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to submit vote");
+  }
+
+  return data;
+}
+
+/*
+  Fetches this wallet's internal boost-token balance for the current race.
+
+  Example backend response:
+  {
+    raceId: 12,
+    wallet: "...",
+    boostTokens: {
+      granted: 3,
+      spent: 1,
+      remaining: 2,
+      status: "active"
+    }
+  }
+
+  Important:
+  This is only for display.
+  The backend still decides whether a vote is allowed.
+*/
+async function fetchBoostBalance(wallet) {
+  const res = await fetch(
+    `${API_BASE}/boost-balance?wallet=${encodeURIComponent(wallet)}`,
+    {
+      cache: "no-store"
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch boost balance");
+  }
+
+  return data.boostTokens;
+}
+
+/*
+  Fetches current boost-power percentages for the race HUD.
+
+  For now the backend returns placeholder values:
+  Car 1: 100%
+  Car 2: 100%
+  Car 3: 100%
+
+  Later this endpoint can return real values from the car/race backend.
+*/
+async function fetchBoostPower() {
+  const res = await fetch(`${API_BASE}/boost-power/current`, {
+    cache: "no-store"
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch boost power");
+  }
+
+  return data.boostPower || [];
+}
+
+/*
+  Fetch the most recent settled bet for this wallet.
+
+  This lets the HUD show the latest race outcome even after
+  the backend has already moved on to the next idle race.
+*/
+async function fetchLatestSettledBet(wallet) {
+  const res = await fetch(
+    `${API_BASE}/bet/latest-settled?wallet=${encodeURIComponent(wallet)}`,
+    {
+      cache: "no-store"
+    }
+  );
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.error || "Failed to fetch latest settled bet");
+  }
+
+  return data.bet;
+}
+
+/*
+  Refreshes HUD-specific data from the backend.
+
+  This fetches:
+  - latest settled result
+  - current boost-token balance
+  - current boost-power values
+
+  Then re-renders the HUD.
+
+  Important:
+  currentBetDetails is still refreshed by restoreCurrentBetFromBackend().
+*/
+async function refreshHudData() {
+  const activeWallet = getActiveWallet();
+
+  if (!activeWallet) {
+    currentBetDetails = null;
+    latestSettledBetDetails = null;
+    currentBoostTokens = null;
+    currentBoostPower = {
+      "Car 1": null,
+      "Car 2": null,
+      "Car 3": null
+    };
+
+    updateHud();
+    updateBoostStrategyHud();
+    return;
+  }
+
+  /*
+    Latest settled result powers the Race Result HUD.
+  */
+  latestSettledBetDetails = await fetchLatestSettledBet(activeWallet);
+
+  /*
+    Boost balance powers the Boost Tokens HUD.
+
+    If the user has no confirmed bet for the current race, the backend
+    returns boostTokens: null, which we display as "—".
+  */
+  currentBoostTokens = await fetchBoostBalance(activeWallet);
+
+  /*
+    Boost power powers the live car power display.
+
+    For now these are placeholder values from the backend.
+  */
+  const boostPowerRows = await fetchBoostPower();
+
+  currentBoostPower = {
+    "Car 1": null,
+    "Car 2": null,
+    "Car 3": null
+  };
+
+  boostPowerRows.forEach((row) => {
+    if (!row || !row.carId) return;
+    currentBoostPower[row.carId] = row.percent;
+  });
+
+  updateHud();
+  updateBoostStrategyHud();
+}
+
+/*
+  ============================================================
+  BACKEND -> FRONTEND STATE SYNC
+  ============================================================
+*/
+
+/*
+  handleRaceChangeFromBackend()
+
+  Detects when the backend has moved to a new race.
+
+  This matters after automatic mock settlement:
+  - backend settles old race
+  - backend creates next idle race
+  - frontend must clear old confirmed bet state
+  - Race Bet Panel must unlock
+*/
+function handleRaceChangeFromBackend(newRaceId, newState) {
+  if (!newRaceId) return;
+
+  const hadPreviousRace = currentRaceId !== null;
+  const raceChanged = hadPreviousRace && currentRaceId !== newRaceId;
+
+  if (!raceChanged) return;
+
+  if (newState === "idle") {
+    resetRaceSelection();
+
+    currentBoostTokens = null;
+    votedCycleId = null;
+    submittingVoteCycleId = null;
+    isSubmittingVote = false;
+
+    localStorage.removeItem("lockedCarId");
+    localStorage.removeItem("votedCycleId");
+
+    updateHud();
+    updateBoostStrategyHud();
+    updateRaceBetPanel();
+    applyCarSelectionUI();
+  }
+}
+
+function applyCycleFromBackend(cycle) {
+  previousState = currentState;
+
+  currentCycleId = cycle.id;
+  currentRaceId = cycle.raceId ?? cycle.race_id ?? null;
+  currentState = cycle.state;
+  currentWinnerCarId = cycle.winnerCarId ?? cycle.winner_car_id ?? null;
+  currentCycleEndsAt = cycle.endsAt ?? cycle.ends_at ?? null;
+
+  /*
+    Calculate how far this device's clock is from the backend clock.
+
+    Example:
+    - if the laptop clock is 2 seconds behind the server,
+      serverTimeOffsetMs will be about +2000
+    - countdowns then use Date.now() + serverTimeOffsetMs
+  */
+  if (cycle.serverTime) {
+    const serverNowMs = new Date(cycle.serverTime).getTime();
+
+    if (Number.isFinite(serverNowMs)) {
+      serverTimeOffsetMs = serverNowMs - Date.now();
+    }
+  }
+
+  // Once backend leaves idle, race start is no longer "pending"
+  if (currentState !== "idle") {
+    pendingRaceStartCarId = null;
+    isStartingRace = false;
+  }
+
+  hasInitialSync = true;
+}
+
+/*
+  syncFromBackend()
+
+  Polls the backend for latest cycle state and updates the UI.
+
+  Important:
+  syncRequestCounter protects against stale responses arriving out of order.
+*/
+async function syncFromBackend() {
+  /*
+    If a bet/payment is currently being submitted, do not let the normal
+    backend polling renderer overwrite the top-bar message.
+
+    Without this, the UI can briefly show:
+    "Select a car to start the race"
+    while the wallet popup/payment confirmation is still pending.
+  */
+  if (isSubmittingBet) {
+    return;
+  }
+
+  const requestId = ++syncRequestCounter;
+
+  try {
+    const cycle = await fetchCurrentCycle();
+
+    // Ignore stale request responses that finished after a newer one started.
+    if (requestId < syncRequestCounter) {
+      return;
+    }
+
+    // If we are starting a race and backend still says idle,
+    // keep showing "Starting race..." rather than resetting UI.
+    if (isStartingRace && cycle.state === "idle") {
+      return;
+    }
+
+    /*
+      If the backend has moved to a new idle race, the previous race has ended.
+
+      This matters after automatic mock settlement:
+      - backend settles the old race
+      - backend creates the next idle race
+      - frontend needs to unlock the Race Bet Panel
+    */
+    handleRaceChangeFromBackend(cycle.raceId, cycle.state);
+
+    applyCycleFromBackend(cycle);
+
+    /*
+      While the app is waiting to start, restore the current wallet's bet from
+      the backend before rendering.
+
+      This means selected-car view is based on a confirmed backend bet, not stale
+      browser storage.
+    */
+    if (!isSubmittingBet && (currentState === "idle" || currentState === "starting")) {
+      await restoreCurrentBetFromBackend();
+    }
+
+    /*
+      Refresh the HUD so the betting and latest-result panels stay in sync
+      with backend truth.
+    */
+    await refreshHudData();
+
+    // If we have moved into a new voting cycle, clear old voted state.
+    if (
+      votedCycleId !== null &&
+      votedCycleId !== currentCycleId &&
+      currentState === "voting"
+    ) {
+      votedCycleId = null;
+      localStorage.removeItem("votedCycleId");
+    }
+
+    renderStateFromBackend();
+
+    // Add a "ready" class once we have at least one successful sync.
+    document.querySelector(".page")?.classList.add("ready");
+  } catch (error) {
+    console.error("Backend sync failed:", error);
+
+    // Only replace timer text if this was the newest request.
+    if (requestId === syncRequestCounter) {
+      boostTimer.textContent = "Connection issue";
+    }
+  }
+}
+
+/*
+  ============================================================
+  RENDERING
+  ============================================================
+*/
+
+// Starts or refreshes the countdown timer based on backend endsAt.
+function startCountdownToEndsAt() {
+  clearInterval(countdownInterval);
+
+  function updateCountdown() {
+    if (!currentCycleEndsAt) return;
+
+    const serverAdjustedNowMs = Date.now() + serverTimeOffsetMs;
+    const msRemaining = new Date(currentCycleEndsAt).getTime() - serverAdjustedNowMs;
+    const seconds = Math.max(0, Math.ceil(msRemaining / 1000));
+
+    if (currentState === "starting") {
+      boostTimer.textContent = `Race starts in: ${seconds}s`;
+    } else if (currentState === "voting") {
+      boostTimer.textContent = `Vote closes in: ${seconds}s`;
+    } else if (currentState === "finalizing") {
+      boostTimer.textContent = `Finalizing boost... ${seconds}s`;
+    } else if (currentState === "boost") {
+      boostTimer.textContent = `Boost active: ${seconds}s`;
+    }
+  }
+
+  updateCountdown();
+  countdownInterval = setInterval(updateCountdown, 250);
+}
+
+/*
+  renderStateFromBackend()
+
+  Main UI renderer based on backend cycle state.
+
+  Important:
+  - idle no longer always means "reset the UI"
+  - if the user has already submitted a bet in the current idle race,
+    we keep the chosen car locked on screen while waiting for Start Race
+*/
+function renderStateFromBackend() {
+  clearAllBoostFlames();
+
+  const hasLockedBetView =
+    currentBetStatus === "confirmed" ||
+    currentBetId !== null ||
+    lockedCarId !== null ||
+    selectedCarId !== null;
+
+  // ----------------------------------------------------------
+  // IDLE
+  // ----------------------------------------------------------
+  if (currentState === "idle") {
+    /*
+      Start Race should only be enabled after a confirmed bet.
+    */
+    updateStartRaceButton();
+
+    /*
+      If we just came back from an active race, reset everything.
+      This is the true end-of-race reset.
+    */
+    if (previousState && previousState !== "idle") {
+      resetRaceSelection();
+      renderIdleUI();
+      return;
+    }
+
+    /*
+      If the user has already placed a bet while the race is still idle,
+      keep the selected car view instead of resetting back to the dropdowns.
+    */
+    if (hasLockedBetView) {
+      applyCarSelectionUI();
+
+      if (currentBetStatus === "confirmed") {
+        boostTimer.textContent = "Bet submitted. Waiting for race start.";
+      } else {
+        boostTimer.textContent = "Select a car to start the race";
+      }
+
+      return;
+    }
+
+    renderIdleUI();
+    return;
+  }
+
+  // Non-idle states should keep the selected/locked car UI.
+  applyCarSelectionUI();
+
+  // ----------------------------------------------------------
+  // STARTING
+  // ----------------------------------------------------------
+  if (currentState === "starting") {
+    updateStartRaceButton();
+
+    document.querySelectorAll(".boost-btn").forEach((button) => {
+      button.disabled = true;
+      button.textContent = "Boost Locked";
+    });
+
+    startCountdownToEndsAt();
+    return;
+  }
+
+  const allCarCards = document.querySelectorAll(".car-card");
+  const activeCarId = lockedCarId || selectedCarId;
+
+  // ----------------------------------------------------------
+  // VOTING
+  // ----------------------------------------------------------
+  if (currentState === "voting") {
+    updateStartRaceButton();
+
+    allCarCards.forEach((carCard) => {
+      const button = carCard.querySelector(".boost-btn");
+      if (!button) return;
+
+      /*
+        Get the car ID from this specific card.
+
+        This matters for trifecta bets because all 3 car cards can be visible
+        and the user may choose which car to boost.
+      */
+      const carId = carCard.dataset.car;
+      const canBoostThisCar = isCarAllowedForCurrentBet(carId);
+
+      /*
+        If this car is not allowed for the current bet, lock its button.
+
+        Winner bet:
+        - only the selected winner car is allowed
+
+        Trifecta bet:
+        - all cars in the trifecta order are allowed
+      */
+      if (!canBoostThisCar) {
+        button.disabled = true;
+        button.textContent = "Locked";
+      }
+
+      /*
+        If this browser is currently submitting a vote, keep the button blocked.
+      */
+      else if (isSubmittingVote && submittingVoteCycleId === currentCycleId) {
+        button.disabled = true;
+        button.textContent = "Submitting.";
+      }
+
+      /*
+        If this wallet has already voted in this cycle, block another vote.
+      */
+      else if (votedCycleId === currentCycleId) {
+        button.disabled = true;
+        button.textContent = "Vote Submitted";
+      }
+
+      /*
+        If this wallet has used all boost tokens for the race, block the button.
+      */
+      else if (
+        currentBoostTokens &&
+        Number(currentBoostTokens.remaining) <= 0
+      ) {
+        button.disabled = true;
+        button.textContent = "No Boost Tokens";
+      }
+
+      /*
+        Otherwise, voting is open and this car is valid for the current bet.
+      */
+      else {
+        button.disabled = false;
+        button.textContent = "Boost";
+      }
+    });
+  }
+
+  // ----------------------------------------------------------
+  // FINALIZING
+  // ----------------------------------------------------------
+  if (currentState === "finalizing") {
+    updateStartRaceButton();
+
+    allCarCards.forEach((carCard) => {
+      const button = carCard.querySelector(".boost-btn");
+      if (!button) return;
+
+      button.disabled = true;
+      button.textContent = "Authenticating...";
+    });
+  }
+
+  // ----------------------------------------------------------
+  // BOOST
+  // ----------------------------------------------------------
+  if (currentState === "boost") {
+    updateStartRaceButton();
+
+    allCarCards.forEach((carCard) => {
+      const button = carCard.querySelector(".boost-btn");
+      if (!button) return;
+
+      button.disabled = true;
+      button.textContent = "Boosting...";
+    });
+
+    if (currentWinnerCarId) {
+      const winningCard = getCarCardByCarId(currentWinnerCarId);
+      const winningImage = winningCard?.querySelector(".car-image");
+
+      if (winningImage) {
+        winningImage.classList.add("boost-active");
+      }
+    }
+
+    const userCarId = lockedCarId || selectedCarId;
+
+    if (
+      currentWinnerCarId &&
+      userCarId &&
+      currentWinnerCarId !== userCarId &&
+      shownBoostResultCycleId !== currentCycleId
+    ) {
+      shownBoostResultCycleId = currentCycleId;
+      showBoostResultModal(currentWinnerCarId);
+    }
+  }
+
+  // Keep the timer running for voting/finalizing/boost.
+  startCountdownToEndsAt();
+}
+
+/*
+  ============================================================
+  EVENT HANDLERS
+  ============================================================
+*/
+
+/*
+  CAR / BET SELECTION
+
+  New Option B flow:
+  1. user chooses a car and stake amount from the dropdown
+  2. frontend creates a bet intent
+  3. frontend submits mock payment proof
+  4. backend confirms the bet
+  5. UI locks onto that car and shows the Boost button area
+  6. race only starts when Start Race is clicked separately
+*/
+
+/*
+  NEW RACE BET PANEL EVENTS
+
+  Stage 1:
+  - updates visual state
+  - does not submit bets yet
+*/
+betTypeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    selectedBetType = button.dataset.betType || "winner";
+    updateRaceBetPanel();
+  });
+});
+
+stakeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    selectedStakeAmount = Number(button.dataset.stake || 1);
+    updateRaceBetPanel();
+  });
+});
+
+winnerCarButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    selectedWinnerCarId = button.dataset.car || null;
+    updateRaceBetPanel();
+  });
+});
+
+trifectaFirstSelect?.addEventListener("change", () => {
+  selectedTrifectaOrder.first = trifectaFirstSelect.value;
+  updateRaceBetPanel();
+});
+
+trifectaSecondSelect?.addEventListener("change", () => {
+  selectedTrifectaOrder.second = trifectaSecondSelect.value;
+  updateRaceBetPanel();
+});
+
+trifectaThirdSelect?.addEventListener("change", () => {
+  selectedTrifectaOrder.third = trifectaThirdSelect.value;
+  updateRaceBetPanel();
+});
+
+/*
+  PLACE BET BUTTON
+
+  New central Race Bet Panel flow.
+
+  This replaces the old per-card dropdown betting flow once tested.
+*/
+placeBetBtn?.addEventListener("click", async () => {
+  const activeWallet = getActiveWallet();
+
+  if (!activeWallet) {
+    alert("Connect your wallet before placing a bet.");
+    return;
+  }
+
+  if (!hasInitialSync || currentState === null) {
+    await syncFromBackend();
+  }
+
+  if (currentState !== "idle" && currentState !== "starting") {
+    alert("Betting is closed for this race");
+    return;
+  }
+
+  const stakeAmount = selectedStakeAmount;
+
+  const betType = selectedBetType;
+
+  const carId =
+    betType === "winner"
+      ? selectedWinnerCarId
+      : null;
+
+  const trifectaOrder =
+    betType === "trifecta"
+      ? getSelectedTrifectaOrderArray()
+      : null;
+
+  if (betType === "winner" && !carId) {
+    alert("Choose a car for your winner bet.");
+    return;
+  }
+
+  if (betType === "trifecta" && !isSelectedTrifectaValid()) {
+    alert("Choose three different cars for your trifecta order.");
+    return;
+  }
+
+  try {
+    isSubmittingBet = true;
+
+    if (placeBetBtn) {
+      placeBetBtn.disabled = true;
+      placeBetBtn.textContent =
+        appConfig.appMode === "devnet"
+          ? "Waiting for Wallet..."
+          : "Placing Bet...";
+    }
+
+    setBetPendingMessage(
+      appConfig.appMode === "devnet"
+        ? "Preparing wallet transaction..."
+        : "Submitting bet..."
+    );
+
+    const betIntent = await createBetIntent({
+      wallet: activeWallet,
+      betType,
+      carId,
+      trifectaOrder,
+      stakeAmount
+    });
+
+    currentBetId = betIntent.betId;
+
+    setBetPendingMessage("Waiting for wallet approval...");
+
+    const confirmedBet = await submitBet(
+      betIntent.betId,
+      activeWallet,
+      stakeAmount
+    );
+
+    await refreshWalletBalance();
+
+    applyConfirmedBetToFrontendState({
+      betIntent,
+      confirmedBet,
+      fallbackBetType: betType,
+      fallbackCarId: carId,
+      fallbackTrifectaOrder: trifectaOrder,
+      stakeAmount
+    });
+
+    if (placeBetBtn) {
+      placeBetBtn.textContent =
+        betType === "winner"
+          ? "Winner Bet Placed"
+          : "Trifecta Bet Placed";
+    }
+  } catch (error) {
+    console.error("Race Bet Panel flow failed:", error);
+
+    isSubmittingBet = false;
+    currentBetId = null;
+    currentBetStatus = null;
+    currentBetDetails = null;
+    selectedCarId = null;
+    pendingRaceStartCarId = null;
+    lockedCarId = null;
+
+    localStorage.removeItem("lockedCarId");
+
+    renderIdleUI();
+    updateHud();
+    updateRaceBetPanel();
+
+    const friendlyMessage = getFriendlyWalletErrorMessage
+      ? getFriendlyWalletErrorMessage(error)
+      : error.message || "Bet failed";
+
+    boostTimer.textContent = friendlyMessage;
+    alert(friendlyMessage);
+  } finally {
+    isSubmittingBet = false;
+    updateRaceBetPanel();
+  }
+});
+
+/*
+  START RACE BUTTON
+
+  Starts the shared backend-owned 20-second countdown.
+
+  Betting stays open during "starting".
+  Betting locks once backend moves to "voting".
+*/
+startRaceBtn?.addEventListener("click", async () => {
+  if (!userHasConfirmedBet()) {
+    alert("Please back a car before starting the race.");
+    updateStartRaceButton();
+    return;
+  }
+
+  try {
+    if (!hasInitialSync || currentState === null) {
+      await syncFromBackend();
+    }
+
+    if (currentState !== "idle") {
+      alert("Race countdown has already started or race is active");
+      return;
+    }
+
+    startRaceBtn.disabled = true;
+    startRaceBtn.textContent = "Starting...";
+
+    const raceStartData = await startRace();
+
+    applyCycleFromBackend(raceStartData.cycle);
+    renderStateFromBackend();
+
+    await syncFromBackend();
+  } catch (error) {
+    console.error(error);
+
+    if (startRaceBtn) {
+      startRaceBtn.disabled = currentBetStatus !== "confirmed";
+      startRaceBtn.textContent = "Start Race";
+    }
+
+    alert(error.message);
+  }
+});
+
+/*
+  BOOST BUTTON CLICK
+
+  Flow:
+  1. make sure we are in voting state
+  2. create vote intent
+  3. submit vote
+  4. mark current cycle as voted
+  5. refresh UI from backend
+*/
+boostButtons.forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (currentState !== "voting") return;
+
+    /*
+      Use the car from the clicked card, not the globally locked car.
+
+      This is required for trifecta bets because the user can boost
+      any car in their order.
+    */
+    const carId = button.closest(".car-card")?.dataset.car;
+
+    if (!carId) return;
+
+    /*
+      Frontend UX guard.
+      Backend still enforces the actual rule.
+    */
+    if (!isCarAllowedForCurrentBet(carId)) {
+      alert("This car is not available for your current bet.");
+      return;
+    }
+
+    try {
+      isSubmittingVote = true;
+      submittingVoteCycleId = currentCycleId;
+
+      button.disabled = true;
+      button.textContent = "Submitting...";
+
+      /*
+        Use whichever wallet is active for the current app mode.
+
+        Demo mode:
+        - generated demo wallet
+
+        Devnet mode:
+        - connected real wallet public key
+      */
+      const activeWallet = getActiveWallet();
+
+      if (!activeWallet) {
+        throw new Error("Connect wallet before voting");
+      }
+
+      /*
+        Create vote intent.
+
+        Backend checks:
+        - voting is open
+        - wallet has confirmed bet
+        - selected car is allowed for bet type
+        - boost tokens are active
+        - tokens are remaining
+      */
+      const intent = await createVoteIntent(activeWallet, carId);
+      currentVoteIntentId = intent.intentId;
+
+      /*
+        Submit vote.
+
+        Backend confirms the vote and spends 1 boost token.
+      */
+      const voteResult = await submitVote(intent.intentId, activeWallet);
+
+      /*
+        Immediately update local boost-token HUD from backend response.
+      */
+      if (voteResult.boostTokens) {
+        currentBoostTokens = voteResult.boostTokens;
+        updateBoostStrategyHud();
+      }
+
+      votedCycleId = voteResult.cycleId;
+      localStorage.setItem("votedCycleId", String(votedCycleId));
+
+      isSubmittingVote = false;
+      submittingVoteCycleId = null;
+
+      // Keep chosen car visually locked for this cycle.
+      lockedCarId = carId;
+      localStorage.setItem("lockedCarId", lockedCarId);
+
+      button.textContent = "Vote Submitted";
+
+      await syncFromBackend();
+    } catch (error) {
+      console.error(error);
+
+      isSubmittingVote = false;
+      submittingVoteCycleId = null;
+
+      button.disabled = false;
+      button.textContent = "Boost";
+
+      alert(error.message);
+    }
+  });
+});
+
+/*
+  Wallet connection button.
+
+  Demo mode:
+  - just shows that a generated demo wallet is being used
+
+  Devnet mode:
+  - connects to the injected Solana wallet
+*/
+connectWalletBtn.addEventListener("click", async () => {
+  if (appConfig.appMode === "demo") {
+    alert(`Demo wallet active:\n${DEMO_WALLET}`);
+    return;
+  }
+
+  await connectSolanaWallet();
+});
+
+/*
+  Modal close handlers:
+  - clicking the close button hides the popup
+  - clicking the dark overlay outside the modal card also hides it
+*/
+closeBoostResultModalBtn?.addEventListener("click", hideBoostResultModal);
+
+boostResultModal?.addEventListener("click", (event) => {
+  if (event.target === boostResultModal) {
+    hideBoostResultModal();
+  }
+});
+
+/*
+  ============================================================
+  POLLING
+  ============================================================
+*/
+
+// Starts backend polling loop.
+// This keeps the frontend synced to cycle changes.
+function startBackendPolling() {
+  clearInterval(pollInterval);
+
+  syncFromBackend();
+
+  pollInterval = setInterval(() => {
+    syncFromBackend();
+  }, 1000);
+}
+
+/*
+  ============================================================
+  APP START
+  ============================================================
+*/
+
+/*
+  Initial app load.
+
+  Important:
+  - Load app config first.
+  - Then start the existing backend polling.
+  - This does not change race, bet, or vote behaviour.
+*/
+async function initApp() {
+  try {
+    await fetchAppConfig();
+
+    updateWalletButton();
+
+    /*
+      Render the HUD immediately with config/default values.
+
+      At this point:
+      - app mode is known
+      - network/token are known
+      - wallet may not be connected yet
+    */
+    updateHud();
+
+    /*
+      Render the new Race Bet Panel initial state.
+    */
+    updateRaceBetPanel();
+
+    /*
+      Start backend polling first so the top bar and race UI render even if
+      Phantom is having extension/provider issues.
+    */
+    startBackendPolling();
+
+    /*
+      Wallet reconnect should not block the app from loading.
+
+      If reconnect succeeds, trySilentWalletReconnect() will refresh the HUD.
+      If it fails, the HUD still shows Not connected.
+    */
+    trySilentWalletReconnect().catch((error) => {
+      updateHud();
+    });
+  } catch (error) {
+    console.error("App init failed:", error);
+
+    if (boostTimer) {
+      boostTimer.textContent = "Connection issue";
+    }
+  }
+}
+
+initApp();

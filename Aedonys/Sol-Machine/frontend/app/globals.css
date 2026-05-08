@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: #080808;
+  color: #f0f0f0;
+  font-family: "Courier New", Courier, monospace;
+  user-select: none;
+}
+
+/* Scrollable on mobile */
+@media (max-width: 640px) {
+  html,
+  body {
+    overflow: auto;
+  }
+}
+
+/* MJPEG img fills its container */
+.live-feed-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* Orange glow button */
+.btn-accent {
+  border: 1px solid #ff4400;
+  color: #ff4400;
+  background: transparent;
+  transition: background 0.15s;
+}
+.btn-accent:hover:not(:disabled) {
+  background: rgba(255, 68, 0, 0.12);
+}
+.btn-accent:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* Boost vote button */
+.btn-boost {
+  background: linear-gradient(135deg, #ff4400, #ff8800);
+  border: none;
+  color: #fff;
+  font-weight: bold;
+  box-shadow: 0 0 16px rgba(255, 68, 0, 0.4);
+  transition: transform 0.1s, box-shadow 0.2s, opacity 0.15s;
+}
+.btn-boost:hover:not(:disabled) {
+  transform: scale(1.03);
+  box-shadow: 0 0 24px rgba(255, 68, 0, 0.65);
+}
+.btn-boost:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.btn-boost:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Boost banner flash */
+@keyframes boost-flash {
+  0%,
+  100% {
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.boost-banner {
+  animation: boost-flash 0.5s ease-in-out infinite;
+}
+
+/* Car card winner glow */
+@keyframes winner-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(255, 68, 0, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(255, 68, 0, 0.8);
+  }
+}
+.car-winner {
+  animation: winner-glow 0.8s ease-in-out infinite;
+}
