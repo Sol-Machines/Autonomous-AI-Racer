@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { CARS, type Cycle, type BetInfo, type VoteTotals } from "@/lib/types";
 import Header from "@/components/Header";
 import CarBar from "@/components/CarBar";
+import ChatPanel from "@/components/ChatPanel";
 import LiveFeed from "@/components/LiveFeed";
 import CarGrid from "@/components/CarGrid";
 import BetPanel from "@/components/BetPanel";
@@ -29,6 +30,7 @@ export default function HomePage() {
   const [liveCarId, setLiveCarId] = useState("Car 1");
   const [carConnected, setCarConnected] = useState(false);
   const [carName, setCarName] = useState("");
+  const [carAddress, setCarAddress] = useState("");
   const [scanResults, setScanResults] = useState<Set<string>>(new Set());
   const [isScanning, setIsScanning] = useState(false);
 
@@ -97,6 +99,8 @@ export default function HomePage() {
       const data = await res.json();
       setCarConnected(data.connected ?? false);
       if (data.connected && data.name) setCarName(data.name);
+      if (data.connected && data.address) setCarAddress(data.address);
+      else if (!data.connected) setCarAddress("");
     } catch (_) {
       setCarConnected(false);
     }
@@ -317,6 +321,7 @@ export default function HomePage() {
       />
       <div className="flex-1 flex flex-col min-h-0">
         <LiveFeed cycle={cycle} liveCarId={liveCarId} />
+        <ChatPanel carAddress={carAddress} />
         <div className="bg-[#0c0c0c] border-t border-[#1e1e1e] shrink-0">
           <CarGrid
             cycle={cycle}

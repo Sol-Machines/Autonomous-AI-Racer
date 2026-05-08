@@ -27,6 +27,10 @@ const nextConfig = {
         destination: `${raceBackend}/boost/:path*`,
       },
       {
+        source: "/api/chat/:path*",
+        destination: `${raceBackend}/chat/:path*`,
+      },
+      {
         source: "/api/health",
         destination: `${raceBackend}/health`,
       },

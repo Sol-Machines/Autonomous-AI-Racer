@@ -32,6 +32,7 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 from boost import BoostEvent, BoostManager
+from crowd_agent import CarStrategy, CrowdAgent
 from perception import Perception, SteeringIntent
 from perception.opencv_line import OpenCVLineFollower
 from perception.cnn_line import CNNLineFollower
@@ -84,6 +85,9 @@ SOLANA_TREASURY_ATA = os.environ.get("SOLANA_TREASURY_ATA", "")
 BOOST_TOKEN_MINT = os.environ.get("BOOST_TOKEN_MINT", "")
 BOOST_TOKEN_DECIMALS = int(os.environ.get("BOOST_TOKEN_DECIMALS", "0"))
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+CROWD_TRIGGER_N = int(os.environ.get("CROWD_TRIGGER_N", "5"))
+
 # Shell Racing Legends BLE protocol
 CONTROL_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
 BATTERY_CHAR_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
@@ -107,6 +111,7 @@ class CarState:
         self.ble_client: BleakClient | None = None
         self.connected: bool = False
         self.name: str = ""
+        self.address: str = ""
         self.battery: int | None = None
         self.scanning: bool = False
         # Byte 0 is the protocol mode (always 1). Bytes 1-7 are the
@@ -114,10 +119,23 @@ class CarState:
         self.control: bytearray = bytearray([1, 0, 0, 0, 0, 0, 0, 0])
         self.autonomous: bool = False
         self.last_intent: SteeringIntent | None = None
+        self.strategy: CarStrategy = CarStrategy()
 
 
 car = CarState()
 boost = BoostManager(default_duration_s=BOOST_DURATION_SEC)
+
+# Instantiate crowd agent (disabled gracefully if no API key).
+if OPENAI_API_KEY:
+    crowd_agent: CrowdAgent | None = CrowdAgent(
+        api_key=OPENAI_API_KEY,
+        model="o4-mini",
+        trigger_n=CROWD_TRIGGER_N,
+    )
+    log.info("CrowdAgent ready (model=o4-mini, trigger_n=%d)", CROWD_TRIGGER_N)
+else:
+    crowd_agent = None
+    log.info("CrowdAgent disabled — set OPENAI_API_KEY in .env to enable")
 
 
 # ── Perception backend selection ─────────────────────────────────────────────
@@ -333,29 +351,40 @@ async def control_loop() -> None:
 
 # ── Perception loop (PERCEPTION_HZ) ──────────────────────────────────────────
 
+_DEADBAND_MAP = {"safe": 0.20, "normal": 0.12, "tight": 0.06}
+
+
 async def perception_loop() -> None:
     """Pulls frames, runs perception, updates car.control bits.
 
-    Skips ticks when the latest frame is older than FRAME_STALE_SEC —
-    a stalled video stream must not produce a stale steering command
-    that keeps the car driving into a wall.
+    Skips ticks when the latest frame is older than the strategy-adjusted
+    stale threshold — a stalled video stream must not produce a stale
+    steering command that keeps the car driving into a wall.
     """
     period = 1.0 / PERCEPTION_HZ
     while True:
         start = time.monotonic()
         try:
             if car.autonomous and car.connected:
-                if frame_source.latest_age() > FRAME_STALE_SEC:
-                    # Hold position until fresh frames return.
+                s = car.strategy
+                stale_threshold = FRAME_STALE_SEC * (0.5 + s.risk_tolerance)
+                if frame_source.latest_age() > stale_threshold:
                     car.control[1] = 0
                     car.control[2] = 0
                     car.control[3] = 0
                     car.control[4] = 0
                     car.last_intent = SteeringIntent.stop("stale frame")
                 else:
+                    # Apply corner behaviour to perception deadband dynamically.
+                    if hasattr(perception, "deadband"):
+                        perception.deadband = _DEADBAND_MAP.get(s.corner_behaviour, 0.12)
                     frame = await frame_source.read_bgr()
                     if frame is not None:
                         intent = perception.predict(frame)
+                        # Apply throttle aggressiveness: gate forward on confidence.
+                        conf_threshold = (1.0 - s.throttle_aggressiveness) * 0.6
+                        if intent.forward and intent.confidence < conf_threshold:
+                            intent = SteeringIntent.stop("conservative strategy")
                         car.last_intent = intent
                         car.control[1] = intent.forward
                         car.control[2] = intent.reverse
@@ -365,6 +394,30 @@ async def perception_loop() -> None:
             log.exception("Perception tick failed: %s", exc)
         elapsed = time.monotonic() - start
         await asyncio.sleep(max(0.0, period - elapsed))
+
+
+async def strategy_boost_loop() -> None:
+    """Auto-fires boost when boost_usage=save_straights and the car has
+    been going straight continuously for 10 consecutive perception ticks."""
+    from collections import deque
+    recent: deque = deque(maxlen=10)
+    while True:
+        await asyncio.sleep(0.5)
+        if not car.autonomous or not car.connected:
+            recent.clear()
+            continue
+        intent = car.last_intent
+        if intent is not None:
+            recent.append(intent)
+        if (
+            car.strategy.boost_usage in ("save_straights", "hold_overtake")
+            and len(recent) == 10
+            and all(i.forward and not i.left and not i.right for i in recent)
+            and not boost.is_active()
+        ):
+            boost.trigger(BoostEvent(duration_s=BOOST_DURATION_SEC, source="strategy"))
+            recent.clear()
+            log.info("Strategy boost fired (save_straights)")
 
 
 # ── Solana listener wiring ───────────────────────────────────────────────────
@@ -397,6 +450,7 @@ async def lifespan(app: FastAPI):
     await frame_source.start()
     control_task = asyncio.create_task(control_loop())
     perception_task = asyncio.create_task(perception_loop())
+    boost_strategy_task = asyncio.create_task(strategy_boost_loop())
     await solana.start()
     try:
         yield
@@ -404,7 +458,8 @@ async def lifespan(app: FastAPI):
         await solana.stop()
         control_task.cancel()
         perception_task.cancel()
-        for task in (control_task, perception_task):
+        boost_strategy_task.cancel()
+        for task in (control_task, perception_task, boost_strategy_task):
             try:
                 await task
             except asyncio.CancelledError:
@@ -476,9 +531,10 @@ async def car_connect(payload: dict):
         car.ble_client = client
         car.connected = True
         car.name = payload.get("name", "Unknown")
+        car.address = address
         car.battery = battery
         car.control = bytearray([1, 0, 0, 0, 0, 0, 0, 0])
-        return {"connected": True, "name": car.name, "battery": battery}
+        return {"connected": True, "name": car.name, "address": car.address, "battery": battery}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -495,6 +551,7 @@ async def car_disconnect():
     car.connected = False
     car.ble_client = None
     car.name = ""
+    car.address = ""
     car.battery = None
     car.autonomous = False
     car.control = bytearray([1, 0, 0, 0, 0, 0, 0, 0])
@@ -507,11 +564,13 @@ async def car_status():
     return {
         "connected": car.connected,
         "name": car.name,
+        "address": car.address,
         "battery": car.battery,
         "autonomous": car.autonomous,
         "boost_active": boost.is_active(),
         "boost_remaining_s": round(boost.remaining(), 2),
         "perception": perception.name,
+        "strategy": car.strategy.to_dict(),
         "last_intent": (
             None if intent is None
             else {
@@ -865,6 +924,49 @@ async def training_run():
         return JSONResponse({"ok": False, "message": output[-500:]}, status_code=500)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+# ── Chat / crowd strategy endpoints ─────────────────────────────────────────
+
+class ChatMessageInput(BaseModel):
+    car_address: str
+    author: str
+    text: str
+
+
+@app.post("/chat/message")
+async def chat_message(inp: ChatMessageInput):
+    if not inp.text.strip():
+        return JSONResponse({"error": "empty message"}, status_code=400)
+    if not crowd_agent:
+        return JSONResponse({"error": "CrowdAgent not configured (missing OPENAI_API_KEY)"}, status_code=503)
+    msg = await crowd_agent.add_message(inp.car_address, inp.author.strip() or "Anonymous", inp.text.strip())
+    return {
+        "message": msg.to_dict(),
+        "analyzing": crowd_agent.is_analyzing(inp.car_address),
+    }
+
+
+@app.get("/chat/messages")
+async def chat_messages(car_address: str, limit: int = 50):
+    if not crowd_agent:
+        return {"messages": [], "analyzing": False}
+    msgs = crowd_agent.get_messages(car_address, limit=limit)
+    return {
+        "messages": [m.to_dict() for m in msgs],
+        "analyzing": crowd_agent.is_analyzing(car_address),
+    }
+
+
+@app.get("/chat/strategy")
+async def chat_strategy(car_address: str):
+    if not crowd_agent:
+        return CarStrategy().to_dict() | {"analyzing": False}
+    strategy = crowd_agent.get_strategy(car_address)
+    # Apply the consensus strategy to the connected car if addresses match.
+    if car.connected and car.address == car_address:
+        car.strategy = strategy
+    return strategy.to_dict() | {"analyzing": crowd_agent.is_analyzing(car_address)}
 
 
 # ── Frontend config ──────────────────────────────────────────────────────────

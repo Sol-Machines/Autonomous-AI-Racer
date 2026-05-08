@@ -31,3 +31,11 @@ export interface BetInfo {
 export type VoteTotals = Record<string, number>;
 
 export const CARS = ["Car 1", "Car 2", "Car 3"] as const;
+
+export interface CarStrategy {
+  throttle_aggressiveness: number;
+  boost_usage: "immediate" | "save_straights" | "hold_overtake";
+  corner_behaviour: "safe" | "normal" | "tight";
+  risk_tolerance: number;
+  reasoning: string;
+}
