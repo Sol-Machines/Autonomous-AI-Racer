@@ -1,7 +1,0 @@
-
-# To connect to the pi using cable
-sudo dmesg | tail
-sudo screen /dev/ttyACM7 115200
-
-# DHCP static ip for WPhone
-172.20.10.2
