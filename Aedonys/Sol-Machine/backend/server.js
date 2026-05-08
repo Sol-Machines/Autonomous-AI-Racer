@@ -92,6 +92,9 @@ const SOLANA_CLUSTER = process.env.SOLANA_CLUSTER || "devnet";
 const SOLANA_RPC_URL =
   process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
 
+const RACE_BACKEND_URL =
+  process.env.RACE_BACKEND_URL || "http://localhost:3000";
+
 /*
   Public wallet/token addresses.
 
@@ -755,76 +758,26 @@ function setCycleState(id, state, durationMs, winnerCarId = null) {
   `).run(state, startedAt.toISOString(), endsAt.toISOString(), winnerCarId, id);
 }
 
+function triggerHardwareBoostForWinner(winnerCarId, cycleId) {
+  if (!winnerCarId) return;
+
+  fetch(`${RACE_BACKEND_URL}/boost/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      duration_s: BOOST_DURATION_MS / 1000,
+      source: `vote-winner:${winnerCarId}:cycle:${cycleId}`
+    })
+  }).catch((error) => {
+    console.error("Hardware boost trigger failed:", error);
+  });
+}
+
 // If the database is empty, create the first idle race.
 function seedInitialCycleIfNeeded() {
   if (!getCurrentCycle()) {
     startIdleRace(1);
   }
-}
-
-/*
-  TEMPORARY / LEGACY SETTLEMENT PATH
-
-  This function only supports winner-style settlement because it checks:
-    bet.car_id === winningCarId
-
-  It does NOT correctly settle trifecta bets.
-
-  Keep this only for older/manual admin testing.
-  The long-term settlement path should be:
-    recordRaceResultAndSettleBetsTx()
-
-  That newer path supports:
-    - winner bets
-    - exact trifecta order
-    - boost balance expiry
-    - future car-backend result integration
-*/
-
-function settleConfirmedBetsForRace(raceId, winningCarId, raceResultState) {
-  const bets = db.prepare(`
-    SELECT * FROM bets
-    WHERE race_id = ? AND status = 'confirmed'
-  `).all(raceId);
-
-  const now = nowIso();
-
-  let wonCount = 0;
-  let lostCount = 0;
-  let refundedCount = 0;
-
-  for (const bet of bets) {
-    if (raceResultState === "completed") {
-      const nextStatus = bet.car_id === winningCarId ? "won" : "lost";
-
-      if (nextStatus === "won") {
-        wonCount += 1;
-      } else {
-        lostCount += 1;
-      }
-
-      db.prepare(`
-        UPDATE bets
-        SET status = ?, settled_at = ?
-        WHERE id = ?
-      `).run(nextStatus, now, bet.id);
-    } else if (raceResultState === "cancelled" || raceResultState === "invalid") {
-      refundedCount += 1;
-
-      db.prepare(`
-        UPDATE bets
-        SET status = ?, refunded_at = ?
-        WHERE id = ?
-      `).run("refunded", now, bet.id);
-    }
-  }
-
-  return {
-    totalConfirmedBets: bets.length,
-    wonCount,
-    lostCount,
-    refundedCount
-  };
 }
 
 function getConfirmedBetForWalletRace(wallet, raceId) {
@@ -928,6 +881,7 @@ function advanceCycleIfNeeded() {
   if (cycle.state === "finalizing") {
     const winnerCarId = getWinningCarForCycle(cycle.id);
     setCycleState(cycle.id, "boost", BOOST_DURATION_MS, winnerCarId);
+    triggerHardwareBoostForWinner(winnerCarId, cycle.id);
     return;
   }
 
@@ -1928,95 +1882,6 @@ const confirmBetTx = db.transaction(({
     }
   };
 });
-
-/*
-  submitRaceResultTx
-
-  This transaction records the official final race result and settles
-  all confirmed bets for that race in one safe database operation.
-
-  Why it is a transaction:
-  - If the race result is inserted but bet settlement fails, the database
-    could end up in a half-finished state.
-  - Wrapping both steps in a transaction means SQLite commits everything
-    together or rolls everything back together.
-*/
-const submitRaceResultTx = db.transaction(
-  ({ raceId, winningCarId, status, source }) => {
-    /*
-      Prevent duplicate settlement.
-
-      race_results.race_id is already the PRIMARY KEY, so the database
-      would reject duplicate race results anyway, but this check gives us
-      a cleaner error message before trying the insert.
-    */
-    if (isRaceAlreadySettled(raceId)) {
-      const err = new Error("Race result has already been submitted");
-      err.statusCode = 400;
-      throw err;
-    }
-
-    // Store one consistent timestamp for both the race result record
-    // and the settlement operation that follows.
-    const now = nowIso();
-
-    /*
-      Record the official result.
-
-      Important:
-      - This backend is not deciding the winner.
-      - It is only storing the result submitted by the external car/race backend.
-      - winningCarId will be a car ID for completed races.
-      - winningCarId should be null for cancelled or invalid races.
-    */
-    db.prepare(`
-      INSERT INTO race_results (
-        race_id,
-        winning_car_id,
-        status,
-        source,
-        created_at
-      )
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      raceId,
-      winningCarId,
-      status,
-      source,
-      now
-    );
-
-    /*
-      Settle all confirmed bets for this race.
-
-      If status is:
-      - completed: bets on winningCarId become "won", others become "lost"
-      - cancelled/invalid: all confirmed bets become "refunded"
-
-      The function returns a summary count so the API response can show
-      how many bets were won, lost, or refunded.
-    */
-    const settlement = settleConfirmedBetsForRace(
-      raceId,
-      winningCarId,
-      status
-    );
-
-    /*
-      Return a clean summary object to the route handler.
-
-      This is what POST /api/race/result can send back to the caller.
-    */
-    return {
-      raceId,
-      winningCarId,
-      status,
-      source,
-      createdAt: now,
-      settlement
-    };
-  }
-);
 
 /*
   ------------------------------------------------------------
@@ -3037,6 +2902,9 @@ app.post("/api/race/result", requireAdmin, (req, res) => {
   const {
     raceId,
     winningCarId = null,
+    firstCarId = winningCarId,
+    secondCarId = null,
+    thirdCarId = null,
     status,
     source = "unknown"
   } = req.body || {};
@@ -3056,11 +2924,24 @@ app.post("/api/race/result", requireAdmin, (req, res) => {
   }
 
   if (
-    (status === "cancelled" || status === "invalid") &&
-    winningCarId !== null
+    status === "completed" &&
+    (
+      !isValidCarId(firstCarId) ||
+      (secondCarId !== null && !isValidCarId(secondCarId)) ||
+      (thirdCarId !== null && !isValidCarId(thirdCarId))
+    )
   ) {
     return res.status(400).json({
-      error: "Cancelled or invalid races should not include winningCarId"
+      error: "Completed race results require valid finishing order car IDs"
+    });
+  }
+
+  if (
+    (status === "cancelled" || status === "invalid") &&
+    (winningCarId !== null || firstCarId !== null || secondCarId !== null || thirdCarId !== null)
+  ) {
+    return res.status(400).json({
+      error: "Cancelled or invalid races should not include finishing order"
     });
   }
 
@@ -3077,11 +2958,24 @@ app.post("/api/race/result", requireAdmin, (req, res) => {
   }
 
   try {
-    const result = submitRaceResultTx({
+    if (isRaceAlreadySettled(raceId)) {
+      return res.status(400).json({
+        error: "Race result has already been submitted"
+      });
+    }
+
+    const result = recordRaceResultAndSettleBetsTx({
       raceId,
       winningCarId,
+      firstCarId,
+      secondCarId,
+      thirdCarId,
       status,
       source
+    });
+
+    processPendingPayoutsForRace(raceId).catch((error) => {
+      console.error("Manual payout processing failed:", error);
     });
 
     return res.json({

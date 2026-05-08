@@ -1,2 +1,2 @@
-- [Race Mode hackathon project](race_mode_project.md) — single-car AI racer with $BOOST Solana token, built for Colloseum hackathon
-- [Race Mode design decisions](race_mode_design.md) — pluggable perception (OpenCV + tiny CNN), turbo-byte boost, devnet $BOOST + Phantom UX
+- [Sol Machine project](race_mode_project.md) - current architecture for the consolidated Aedonys/Sol-Machine app.
+- [Sol Machine design decisions](race_mode_design.md) - locked-in technical decisions and implementation notes, including crowd strategy.
