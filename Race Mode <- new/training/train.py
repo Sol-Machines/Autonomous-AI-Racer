@@ -120,14 +120,18 @@ def main() -> None:
     print(f"Dataset : {len(items)} frames  L={counts[0]} S={counts[1]} R={counts[2]}")
     print(f"ROI_TOP : {ROI_TOP}   IMG: {IMG_W}x{IMG_H}")
 
-    # Weighted sampling to counter class imbalance
-    weights = [1.0 / (counts[l] + 1) for _, l in items]
-    sampler = torch.utils.data.WeightedRandomSampler(weights, len(items))
-
     random.shuffle(items)
-    split    = int(0.8 * len(items))
-    train_ds = LineDataset(items[:split], augment=True)
-    val_ds   = LineDataset(items[split:], augment=False)
+    split       = int(0.8 * len(items))
+    train_items = items[:split]
+    val_items   = items[split:]
+
+    # Weighted sampling built from the training split only so indices stay in range.
+    train_counts  = [sum(1 for _, l in train_items if l == c) for c in range(NUM_CLASSES)]
+    weights       = [1.0 / (train_counts[l] + 1) for _, l in train_items]
+    sampler       = torch.utils.data.WeightedRandomSampler(weights, len(train_items))
+
+    train_ds = LineDataset(train_items, augment=True)
+    val_ds   = LineDataset(val_items,   augment=False)
     train_dl = DataLoader(train_ds, batch_size=args.batch, sampler=sampler)
     val_dl   = DataLoader(val_ds,   batch_size=args.batch)
 

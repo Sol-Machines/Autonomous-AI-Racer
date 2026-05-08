@@ -25,7 +25,7 @@ from bleak import BleakClient, BleakScanner
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -66,6 +66,9 @@ OPENCV_THRESHOLD = int(os.environ.get("OPENCV_THRESHOLD", "80"))
 OPENCV_ROI_TOP = float(os.environ.get("OPENCV_ROI_TOP", "0.55"))
 OPENCV_DEADBAND = float(os.environ.get("OPENCV_DEADBAND", "0.12"))
 CNN_WEIGHTS_PATH = os.environ.get("CNN_WEIGHTS_PATH", "./training/exports/line_follower.pt")
+
+MJPEG_QUALITY = int(os.environ.get("MJPEG_QUALITY", "35"))
+MJPEG_FPS     = int(os.environ.get("MJPEG_FPS",     "20"))
 
 BOOST_DURATION_SEC = float(os.environ.get("BOOST_DURATION_SEC", "3.0"))
 
@@ -588,6 +591,38 @@ async def camera_snapshot():
     return Response(content=encoded.tobytes(), media_type="image/jpeg", headers=headers)
 
 
+@app.get("/camera/stream.mjpeg")
+async def camera_mjpeg():
+    """MJPEG stream — one independent JPEG per frame, no inter-frame lag."""
+    boundary = b"--frame"
+    period   = 1.0 / MJPEG_FPS
+    encode_params = [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY]
+
+    async def generate():
+        while True:
+            t0 = asyncio.get_event_loop().time()
+            frame = await frame_source.read_bgr()
+            if frame is not None:
+                ok, buf = cv2.imencode(".jpg", frame, encode_params)
+                if ok:
+                    data = buf.tobytes()
+                    yield (
+                        boundary
+                        + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                        + str(len(data)).encode()
+                        + b"\r\n\r\n"
+                        + data
+                        + b"\r\n"
+                    )
+            elapsed = asyncio.get_event_loop().time() - t0
+            await asyncio.sleep(max(0.0, period - elapsed))
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
 @app.get("/camera/debug")
 async def camera_debug():
     """Live-updating HTML page — open in a browser for real-time tuning."""
@@ -743,6 +778,22 @@ async def training_stats():
     }
 
 
+@app.post("/training/clear")
+async def training_clear():
+    """Delete all training frames and labels.csv."""
+    frame_dir = TRAINING_DATA_DIR / "frames"
+    label_csv = TRAINING_DATA_DIR / "labels.csv"
+    deleted = 0
+    with _training_lock:
+        if frame_dir.exists():
+            for f in frame_dir.glob("*.jpg"):
+                f.unlink()
+                deleted += 1
+        if label_csv.exists():
+            label_csv.unlink()
+    return {"deleted_frames": deleted}
+
+
 @app.post("/training/run")
 async def training_run():
     """Kick off train.py in a subprocess and stream back the result.
@@ -782,6 +833,7 @@ async def frontend_config():
     return {
         "pi_ip": PI_IP,
         "go2rtc_port": GO2RTC_PORT,
+        "camera_rotate_deg": CAMERA_ROTATE_DEG,
         "solana_configured": bool(SOLANA_TREASURY_PUBKEY and BOOST_TOKEN_MINT),
         "solana_rpc_url": SOLANA_RPC_URL,
         "treasury_pubkey": SOLANA_TREASURY_PUBKEY,

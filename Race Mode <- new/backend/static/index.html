@@ -57,7 +57,7 @@ header {
   overflow: hidden;
   min-height: 200px;
 }
-video {
+#video {
   width: 100%;
   max-height: 60vh;
   object-fit: contain;
@@ -137,6 +137,76 @@ footer {
 
 .drive-hint { font-size: 11px; color: var(--muted); line-height: 1.5; }
 
+/* ── AUTO button ── */
+#auto-btn {
+  padding: 8px 18px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  background: #1a1a1a;
+  color: var(--muted);
+  border: 1px solid #333;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+#auto-btn.active {
+  background: #0a2a0a;
+  color: #4f4;
+  border-color: #2a6a2a;
+  box-shadow: 0 0 10px rgba(64,255,64,0.3);
+  animation: auto-pulse 2s ease-in-out infinite alternate;
+}
+@keyframes auto-pulse {
+  from { box-shadow: 0 0 6px rgba(64,255,64,0.2); }
+  to   { box-shadow: 0 0 16px rgba(64,255,64,0.5); }
+}
+
+/* ── Direction overlay ── */
+.dir-overlay {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 10;
+}
+.dir-overlay.visible { display: flex; }
+.dir-arrow {
+  font-size: 56px;
+  line-height: 1;
+  transition: color 0.12s, transform 0.12s;
+  filter: drop-shadow(0 2px 8px rgba(0,0,0,0.8));
+}
+.dir-arrow.straight { color: #4f4;    transform: rotate(0deg);    }
+.dir-arrow.left     { color: #ff8800; transform: rotate(-40deg);  }
+.dir-arrow.right    { color: #ff8800; transform: rotate(40deg);   }
+.dir-arrow.stopped  { color: #f44;    transform: rotate(0deg);    }
+.dir-label {
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 3px;
+  color: rgba(255,255,255,0.75);
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+}
+.dir-conf-wrap {
+  width: 72px;
+  height: 4px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.dir-conf-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 2px;
+  transition: width 0.12s, background 0.12s;
+}
+
 /* ── REC controls ── */
 .rec-section { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #rec-btn {
@@ -171,6 +241,17 @@ footer {
   transition: background 0.15s;
 }
 #train-btn:hover { background: #132813; }
+#clear-btn {
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 12px;
+  background: #1a0d0d;
+  color: #c44;
+  border: 1px solid #4a1a1a;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+#clear-btn:hover { background: #281313; }
 #train-status { font-size: 11px; color: var(--muted); }
 
 /* ── Boost row ── */
@@ -311,9 +392,14 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
 </div>
 
 <div class="video-wrap">
-  <video id="video" autoplay muted playsinline></video>
+  <img id="video" src="/camera/stream.mjpeg" alt="">
   <div id="vid-status">Connecting to camera&#8230;</div>
   <div class="boost-banner" id="boost-banner">&#9889; BOOST &#9889;</div>
+  <div class="dir-overlay" id="dir-overlay">
+    <div class="dir-arrow straight" id="dir-arrow">&#8679;</div>
+    <div class="dir-label" id="dir-label">STRAIGHT</div>
+    <div class="dir-conf-wrap"><div class="dir-conf-bar" id="dir-conf-bar"></div></div>
+  </div>
 </div>
 
 <footer>
@@ -325,10 +411,10 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
       <div class="key s" id="key-s">S</div>
       <div class="key d" id="key-d">D</div>
     </div>
-    <div class="drive-hint">
-      Manual drive (autonomous off)<br>
-      Hold keys to steer
+    <div class="drive-hint" id="drive-hint">
+      Manual drive — hold keys to steer
     </div>
+    <button id="auto-btn">&#9654;&#9654; AUTO</button>
 
     <!-- ── Data collection ── -->
     <div class="rec-section">
@@ -340,6 +426,7 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
         &nbsp;total:<span id="rc-t">0</span>
       </div>
       <button id="train-btn">&#9654; Train now</button>
+      <button id="clear-btn">&#128465; Clear data</button>
       <span id="train-status"></span>
     </div>
   </div>
@@ -355,7 +442,7 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     <span>Car: <span class="val" id="s-car">&#8212;</span></span>
     <span>Mode: <span class="val" id="s-mode">&#8212;</span></span>
     <span>Intent: <span class="val" id="s-intent">&#8212;</span></span>
-    <span>Video: <span class="val" id="s-net">connecting</span></span>
+    <span>Camera: <span class="val" id="s-net">connecting</span></span>
     <span>Solana: <span class="val" id="s-sol">&#8212;</span></span>
   </div>
 </footer>
@@ -376,6 +463,11 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
   const boostDuration = cfg.boost_duration_s || 3.0;
   const tokenUnit = BigInt(Math.pow(10, cfg.boost_token_decimals || 0));
   document.getElementById('s-sol').textContent = cfg.solana_configured ? 'devnet' : 'dev mode';
+
+  // Apply camera rotation to the WebRTC video element.
+  if (cfg.camera_rotate_deg) {
+    document.getElementById('video').style.transform = `rotate(${cfg.camera_rotate_deg}deg)`;
+  }
 
   // ── Car picker ─────────────────────────────────────────────────────────────
   let knownCars = [];
@@ -513,59 +605,22 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     else updateCarUI(st);
   } catch (_) { setPanelOpen(true); }
 
-  // ── WebRTC ─────────────────────────────────────────────────────────────────
+  // ── MJPEG stream ───────────────────────────────────────────────────────────
   const video = document.getElementById('video');
   const vidStatus = document.getElementById('vid-status');
-  let pc = null, rtcWs = null, rtcRetry = null;
 
-  function startRTC() {
-    if (rtcRetry) { clearTimeout(rtcRetry); rtcRetry = null; }
-    const wsUrl = `ws://${cfg.pi_ip}:${cfg.go2rtc_port}/api/ws?src=camera`;
-    rtcWs = new WebSocket(wsUrl);
-    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-    pc.addTransceiver('video', { direction: 'recvonly' });
-
-    pc.ontrack = (e) => {
-      video.srcObject = e.streams[0];
-      vidStatus.style.display = 'none';
-      document.getElementById('s-net').textContent = 'WebRTC ✓';
-      document.getElementById('s-net').className = 'val ok';
-    };
-    pc.oniceconnectionstatechange = () => {
-      if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
-        document.getElementById('s-net').textContent = 'reconnecting…';
-        document.getElementById('s-net').className = 'val warn';
-        vidStatus.textContent = 'Camera disconnected — reconnecting…';
-        vidStatus.style.display = '';
-        rtcRetry = setTimeout(startRTC, 3000);
-      }
-    };
-    pc.onicecandidate = (e) => {
-      if (e.candidate && rtcWs.readyState === WebSocket.OPEN)
-        rtcWs.send(JSON.stringify({ type: 'webrtc/candidate', value: e.candidate.candidate }));
-    };
-    rtcWs.onopen = async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      rtcWs.send(JSON.stringify({ type: 'webrtc/offer', value: offer.sdp }));
-    };
-    rtcWs.onmessage = async (msg) => {
-      try {
-        const data = JSON.parse(msg.data);
-        if (data.type === 'webrtc/answer')
-          await pc.setRemoteDescription({ type: 'answer', sdp: data.value });
-        else if (data.type === 'webrtc/candidate' && data.value)
-          await pc.addIceCandidate({ candidate: data.value, sdpMid: '0' });
-      } catch (_) {}
-    };
-    rtcWs.onerror = () => {
-      document.getElementById('s-net').textContent = 'WS error';
-      document.getElementById('s-net').className = 'val warn';
-      vidStatus.style.display = '';
-      rtcRetry = setTimeout(startRTC, 3000);
-    };
-  }
-  startRTC();
+  video.onload = () => {
+    vidStatus.style.display = 'none';
+    document.getElementById('s-net').textContent = 'MJPEG ✓';
+    document.getElementById('s-net').className = 'val ok';
+  };
+  video.onerror = () => {
+    vidStatus.textContent = 'Camera disconnected — reconnecting…';
+    vidStatus.style.display = '';
+    document.getElementById('s-net').textContent = 'reconnecting…';
+    document.getElementById('s-net').className = 'val warn';
+    setTimeout(() => { video.src = '/camera/stream.mjpeg?' + Date.now(); }, 2000);
+  };
 
   // ── WASD keyboard drive ────────────────────────────────────────────────────
   const keys = { w: false, a: false, s: false, d: false };
@@ -606,6 +661,68 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     keyEl(k).classList.remove('active');
     sendControl();
   });
+
+  // ── Autonomous mode ────────────────────────────────────────────────────────
+  async function toggleAutonomous() {
+    const newState = !autonomous;
+    try {
+      await fetch('/car/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newState }),
+      });
+      autonomous = newState;
+      applyAutoUI(newState);
+    } catch (_) {}
+  }
+
+  function applyAutoUI(on) {
+    const btn  = document.getElementById('auto-btn');
+    const hint = document.getElementById('drive-hint');
+    const overlay = document.getElementById('dir-overlay');
+    btn.classList.toggle('active', on);
+    btn.textContent = on ? '⏹ AUTO ON' : '▶▶ AUTO';
+    hint.textContent = on ? 'Autonomous — WASD shows intent' : 'Manual drive — hold keys to steer';
+    overlay.classList.toggle('visible', on);
+    if (!on) {
+      // Clear autonomous key highlights when switching to manual.
+      ['w','a','s','d'].forEach(k => keyEl(k).classList.remove('active'));
+    }
+  }
+
+  function updateDirectionOverlay(intent) {
+    if (!intent || !autonomous) return;
+    const arrow = document.getElementById('dir-arrow');
+    const label = document.getElementById('dir-label');
+    const bar   = document.getElementById('dir-conf-bar');
+
+    let cls, text;
+    if (!intent.forward && !intent.left && !intent.right) {
+      cls = 'stopped'; text = 'STOPPED';
+    } else if (intent.left) {
+      cls = 'left'; text = 'TURN LEFT';
+    } else if (intent.right) {
+      cls = 'right'; text = 'TURN RIGHT';
+    } else {
+      cls = 'straight'; text = 'STRAIGHT';
+    }
+
+    arrow.className = `dir-arrow ${cls}`;
+    label.textContent = text;
+
+    const conf = intent.confidence ?? 0;
+    const colours = { straight: '#44ff44', left: '#ff8800', right: '#ff8800', stopped: '#ff4444' };
+    bar.style.width   = (conf * 100) + '%';
+    bar.style.background = colours[cls];
+
+    // Mirror intent onto the WASD key indicators.
+    keyEl('w').classList.toggle('active', !!intent.forward);
+    keyEl('s').classList.toggle('active', !!intent.reverse);
+    keyEl('a').classList.toggle('active', !!intent.left);
+    keyEl('d').classList.toggle('active', !!intent.right);
+  }
+
+  document.getElementById('auto-btn').addEventListener('click', toggleAutonomous);
 
   // ── Data collection (REC) ──────────────────────────────────────────────────
   let recording = false;
@@ -686,6 +803,26 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
       status.textContent = d.message || JSON.stringify(d);
     } catch (e) {
       status.textContent = 'error: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ── Clear training data ────────────────────────────────────────────────────
+  document.getElementById('clear-btn').addEventListener('click', async () => {
+    const total = rc.left + rc.straight + rc.right;
+    if (!confirm(`Delete all ${total} training frames? This cannot be undone.`)) return;
+    const btn    = document.getElementById('clear-btn');
+    const status = document.getElementById('train-status');
+    btn.disabled = true;
+    try {
+      const d = await fetch('/training/clear', { method: 'POST' }).then(r => r.json());
+      rc.left = rc.straight = rc.right = 0;
+      updateRecCounts();
+      status.textContent = `Cleared ${d.deleted_frames} frames`;
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    } catch (e) {
+      status.textContent = 'clear failed';
     } finally {
       btn.disabled = false;
     }
@@ -788,7 +925,9 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
         fetch('/car/status').then(r => r.json()),
         fetch('/boost/status').then(r => r.json()),
       ]);
+      const wasAuto = autonomous;
       autonomous = cs.autonomous;
+      if (wasAuto !== autonomous) applyAutoUI(autonomous);
 
       updateCarUI(cs);
 
@@ -802,6 +941,7 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
 
       const intent = cs.last_intent;
       document.getElementById('s-intent').textContent = intent ? intent.reason : '–';
+      if (autonomous) updateDirectionOverlay(intent);
 
       const banner = document.getElementById('boost-banner');
       const bar    = document.getElementById('boost-bar');
