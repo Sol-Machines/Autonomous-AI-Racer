@@ -353,9 +353,32 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
 }
 .car-card:hover { background: #1e1e1e; border-color: #444; }
 .car-card.active { border-color: #4c4; background: #0d1a0d; }
-.car-card.connecting { border-color: var(--accent2); opacity: 0.7; }
+.car-card.connecting {
+  border-color: var(--accent2);
+  cursor: wait;
+  animation: card-connecting 0.75s ease-in-out infinite alternate;
+}
+@keyframes card-connecting {
+  from { border-color: var(--accent2); box-shadow: 0 0 4px rgba(255,136,0,0.2); }
+  to   { border-color: #ffcc00;        box-shadow: 0 0 14px rgba(255,200,0,0.5); }
+}
+.car-card.connecting .car-card-status {
+  animation: status-fade 0.75s ease-in-out infinite alternate;
+}
+@keyframes status-fade { from { opacity: 0.4; } to { opacity: 1; } }
+
+.car-card.in-range  { border-color: #2a5a2a; }
+.car-card.out-of-range { opacity: 0.45; }
+
 .car-card-name { font-size: 13px; font-weight: bold; }
 .car-card-addr { font-size: 10px; color: var(--muted); font-family: monospace; }
+.car-signal {
+  font-size: 10px;
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+.car-signal.in-range  { color: #4c4; }
+.car-signal.out-of-range { color: #844; }
 .car-card-status { font-size: 11px; color: var(--muted); }
 .car-card.active .car-card-status { color: #4c4; }
 
@@ -464,11 +487,6 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
   const tokenUnit = BigInt(Math.pow(10, cfg.boost_token_decimals || 0));
   document.getElementById('s-sol').textContent = cfg.solana_configured ? 'devnet' : 'dev mode';
 
-  // Apply camera rotation to the WebRTC video element.
-  if (cfg.camera_rotate_deg) {
-    document.getElementById('video').style.transform = `rotate(${cfg.camera_rotate_deg}deg)`;
-  }
-
   // ── Car picker ─────────────────────────────────────────────────────────────
   let knownCars = [];
   let panelOpen = false;
@@ -482,17 +500,34 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     } catch (_) {}
   }
 
-  function renderCarGrid(cars) {
+  function renderCarGrid(cars, rangeSet = null) {
+    // Sort: in-range first, then unknown, then out-of-range
+    if (rangeSet) {
+      cars = [...cars].sort((a, b) => {
+        const ra = rangeSet.has(a.address) ? 0 : 1;
+        const rb = rangeSet.has(b.address) ? 0 : 1;
+        return ra - rb;
+      });
+    }
     const grid = document.getElementById('car-grid');
     grid.innerHTML = '';
     for (const c of cars) {
+      const inRange = rangeSet ? rangeSet.has(c.address) : null;
       const card = document.createElement('div');
-      card.className = 'car-card';
+      card.className = 'car-card' +
+        (inRange === true  ? ' in-range'    : '') +
+        (inRange === false ? ' out-of-range' : '');
       card.dataset.address = c.address;
       card.dataset.name = c.name;
+      const signalHtml = inRange === true
+        ? '<div class="car-signal in-range">&#9679; IN RANGE</div>'
+        : inRange === false
+          ? '<div class="car-signal out-of-range">&#9679; NOT FOUND</div>'
+          : '';
       card.innerHTML = `
         <div class="car-card-name">${c.name}</div>
         <div class="car-card-addr">${c.address}</div>
+        ${signalHtml}
         <div class="car-card-status">tap to connect</div>`;
       card.addEventListener('click', () => connectCar(c.address, c.name));
       grid.appendChild(card);
@@ -584,11 +619,13 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     try {
       const data = await fetch('/car/scan', { method: 'POST' }).then(r => r.json());
       const found = data.cars || [];
-      // Merge scan results with known cars (avoid duplicates)
-      const knownAddrs = new Set(knownCars.map(c => c.address));
+      const foundAddrs = new Set(found.map(c => c.address));
+      const knownAddrs  = new Set(knownCars.map(c => c.address));
       const extra = found.filter(c => !knownAddrs.has(c.address));
-      renderCarGrid([...knownCars, ...extra]);
-      results.textContent = found.length ? `Found ${found.length} car(s)` : 'No cars found';
+      renderCarGrid([...knownCars, ...extra], foundAddrs);
+      results.textContent = found.length
+        ? `${found.length} car(s) in range`
+        : 'No cars found nearby';
     } catch (_) {
       results.textContent = 'Scan failed';
     } finally {
@@ -608,17 +645,18 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
   // ── MJPEG stream ───────────────────────────────────────────────────────────
   const video = document.getElementById('video');
   const vidStatus = document.getElementById('vid-status');
+  const netEl = document.getElementById('s-net');
 
   video.onload = () => {
     vidStatus.style.display = 'none';
-    document.getElementById('s-net').textContent = 'MJPEG ✓';
-    document.getElementById('s-net').className = 'val ok';
+    netEl.textContent = 'MJPEG ✓';
+    netEl.className = 'val ok';
   };
   video.onerror = () => {
     vidStatus.textContent = 'Camera disconnected — reconnecting…';
     vidStatus.style.display = '';
-    document.getElementById('s-net').textContent = 'reconnecting…';
-    document.getElementById('s-net').className = 'val warn';
+    netEl.textContent = 'reconnecting…';
+    netEl.className = 'val warn';
     setTimeout(() => { video.src = '/camera/stream.mjpeg?' + Date.now(); }, 2000);
   };
 

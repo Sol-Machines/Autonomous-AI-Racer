@@ -67,8 +67,8 @@ OPENCV_ROI_TOP = float(os.environ.get("OPENCV_ROI_TOP", "0.55"))
 OPENCV_DEADBAND = float(os.environ.get("OPENCV_DEADBAND", "0.12"))
 CNN_WEIGHTS_PATH = os.environ.get("CNN_WEIGHTS_PATH", "./training/exports/line_follower.pt")
 
-MJPEG_QUALITY = int(os.environ.get("MJPEG_QUALITY", "35"))
-MJPEG_FPS     = int(os.environ.get("MJPEG_FPS",     "20"))
+MJPEG_QUALITY = int(os.environ.get("MJPEG_QUALITY", "25"))
+MJPEG_WIDTH   = int(os.environ.get("MJPEG_WIDTH",   "640"))   # 0 = no resize
 
 BOOST_DURATION_SEC = float(os.environ.get("BOOST_DURATION_SEC", "3.0"))
 
@@ -156,6 +156,8 @@ class FrameSource:
         self._lock = threading.Lock()
         self._latest: np.ndarray | None = None
         self._latest_at: float = 0.0
+        self._latest_jpeg: bytes | None = None
+        self._latest_jpeg_seq: int = 0
         self._url: str = ""
         self._reads_ok: int = 0
         self._reads_failed: int = 0
@@ -168,7 +170,10 @@ class FrameSource:
         else:
             # FFmpeg flags must be set before opening the capture.
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-                f"rtsp_transport;{RTSP_TRANSPORT}"
+                f"rtsp_transport;{RTSP_TRANSPORT}|"
+                "fflags;nobuffer|"
+                "flags;low_delay|"
+                "max_delay;0"
             )
             self._url = RTSP_URL
             cap = cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
@@ -246,9 +251,21 @@ class FrameSource:
             consec_fail = 0
             self._reads_ok += 1
             frame = _rotate(frame, CAMERA_ROTATE_DEG)
+            # Pre-encode display JPEG in the reader thread so the async
+            # MJPEG endpoint just ships bytes without blocking the event loop.
+            display = frame
+            if MJPEG_WIDTH > 0 and frame.shape[1] > MJPEG_WIDTH:
+                scale = MJPEG_WIDTH / frame.shape[1]
+                display = cv2.resize(frame, (MJPEG_WIDTH, int(frame.shape[0] * scale)),
+                                     interpolation=cv2.INTER_LINEAR)
+            ok_j, buf = cv2.imencode(".jpg", display,
+                                     [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY])
             with self._lock:
                 self._latest = frame
                 self._latest_at = time.monotonic()
+                if ok_j:
+                    self._latest_jpeg = buf.tobytes()
+                    self._latest_jpeg_seq += 1
 
     async def read_bgr(self) -> np.ndarray | None:
         with self._lock:
@@ -258,13 +275,17 @@ class FrameSource:
         with self._lock:
             return float("inf") if self._latest_at == 0 else time.monotonic() - self._latest_at
 
+    def latest_jpeg(self) -> tuple[bytes | None, int]:
+        with self._lock:
+            return self._latest_jpeg, self._latest_jpeg_seq
+
     def stats(self) -> dict:
         return {
             "url": self._url,
             "reads_ok": self._reads_ok,
             "reads_failed": self._reads_failed,
             "reconnects": self._reconnects,
-            "latest_age_s": round(self.latest_age(), 3),
+            "latest_age_s": (None if (a := self.latest_age()) == float("inf") else round(a, 3)),
         }
 
 
@@ -593,29 +614,20 @@ async def camera_snapshot():
 
 @app.get("/camera/stream.mjpeg")
 async def camera_mjpeg():
-    """MJPEG stream — one independent JPEG per frame, no inter-frame lag."""
-    boundary = b"--frame"
-    period   = 1.0 / MJPEG_FPS
-    encode_params = [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY]
+    """MJPEG stream. Frames are pre-encoded in the reader thread; this
+    generator just ships the bytes as soon as a new sequence number appears."""
+    header = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+    tail   = b"\r\n"
 
     async def generate():
+        last_seq = -1
         while True:
-            t0 = asyncio.get_event_loop().time()
-            frame = await frame_source.read_bgr()
-            if frame is not None:
-                ok, buf = cv2.imencode(".jpg", frame, encode_params)
-                if ok:
-                    data = buf.tobytes()
-                    yield (
-                        boundary
-                        + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
-                        + str(len(data)).encode()
-                        + b"\r\n\r\n"
-                        + data
-                        + b"\r\n"
-                    )
-            elapsed = asyncio.get_event_loop().time() - t0
-            await asyncio.sleep(max(0.0, period - elapsed))
+            jpeg, seq = frame_source.latest_jpeg()
+            if jpeg is not None and seq != last_seq:
+                last_seq = seq
+                yield header + jpeg + tail
+            else:
+                await asyncio.sleep(0.005)  # 5 ms poll — yields control without busy-waiting
 
     return StreamingResponse(
         generate(),
