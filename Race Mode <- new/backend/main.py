@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 from bleak import BleakClient, BleakScanner
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -633,6 +633,33 @@ async def camera_mjpeg():
         generate(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+@app.websocket("/camera/ws")
+async def camera_ws(websocket: WebSocket):
+    """Pull-based frame stream over WebSocket.
+
+    Client sends any text message when it is ready for the next frame;
+    server immediately responds with the latest pre-encoded JPEG bytes.
+    Because the client drives the loop, there is no TCP queue accumulation —
+    every frame delivered is the most recent one available.
+    """
+    await websocket.accept()
+    try:
+        while True:
+            await websocket.receive_text()  # wait for "ready" signal
+            # Spin briefly if the camera is still warming up.
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                jpeg, _ = frame_source.latest_jpeg()
+                if jpeg is not None:
+                    await websocket.send_bytes(jpeg)
+                    break
+                await asyncio.sleep(0.05)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        log.debug("camera_ws closed: %s", exc)
 
 
 @app.get("/camera/debug")

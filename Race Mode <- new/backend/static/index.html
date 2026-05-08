@@ -415,7 +415,7 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
 </div>
 
 <div class="video-wrap">
-  <img id="video" src="/camera/stream.mjpeg" alt="">
+  <img id="video" alt="">
   <div id="vid-status">Connecting to camera&#8230;</div>
   <div class="boost-banner" id="boost-banner">&#9889; BOOST &#9889;</div>
   <div class="dir-overlay" id="dir-overlay">
@@ -642,23 +642,55 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     else updateCarUI(st);
   } catch (_) { setPanelOpen(true); }
 
-  // ── MJPEG stream ───────────────────────────────────────────────────────────
+  // ── WebSocket pull stream ──────────────────────────────────────────────────
+  // Client sends "ready" after each frame renders; server replies with the
+  // latest JPEG bytes. No TCP queue accumulation — always shows current frame.
   const video = document.getElementById('video');
   const vidStatus = document.getElementById('vid-status');
   const netEl = document.getElementById('s-net');
+  let cameraWs = null;
+  let prevBlobUrl = null;
+
+  function connectCameraWS() {
+    const ws = new WebSocket(`ws://${location.host}/camera/ws`);
+    ws.binaryType = 'arraybuffer';
+    cameraWs = ws;
+
+    ws.onopen = () => { ws.send('ready'); };
+
+    ws.onmessage = (e) => {
+      const blob = new Blob([e.data], { type: 'image/jpeg' });
+      const url = URL.createObjectURL(blob);
+      const old = prevBlobUrl;
+      prevBlobUrl = url;
+      video.src = url;
+      if (old) URL.revokeObjectURL(old);
+    };
+
+    ws.onclose = () => {
+      cameraWs = null;
+      netEl.textContent = 'reconnecting…';
+      netEl.className = 'val warn';
+      vidStatus.textContent = 'Camera disconnected — reconnecting…';
+      vidStatus.style.display = '';
+      setTimeout(connectCameraWS, 2000);
+    };
+    ws.onerror = () => ws.close();
+  }
 
   video.onload = () => {
     vidStatus.style.display = 'none';
-    netEl.textContent = 'MJPEG ✓';
+    netEl.textContent = 'live ✓';
     netEl.className = 'val ok';
+    // Request next frame only after this one is fully rendered.
+    if (cameraWs && cameraWs.readyState === WebSocket.OPEN) cameraWs.send('ready');
   };
   video.onerror = () => {
-    vidStatus.textContent = 'Camera disconnected — reconnecting…';
-    vidStatus.style.display = '';
-    netEl.textContent = 'reconnecting…';
-    netEl.className = 'val warn';
-    setTimeout(() => { video.src = '/camera/stream.mjpeg?' + Date.now(); }, 2000);
+    // Keep the loop alive even if a single JPEG decode fails.
+    if (cameraWs && cameraWs.readyState === WebSocket.OPEN) cameraWs.send('ready');
   };
+
+  connectCameraWS();
 
   // ── WASD keyboard drive ────────────────────────────────────────────────────
   const keys = { w: false, a: false, s: false, d: false };
