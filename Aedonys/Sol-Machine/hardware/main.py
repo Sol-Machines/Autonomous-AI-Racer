@@ -87,6 +87,7 @@ BOOST_TOKEN_DECIMALS = int(os.environ.get("BOOST_TOKEN_DECIMALS", "0"))
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 CROWD_TRIGGER_N = int(os.environ.get("CROWD_TRIGGER_N", "5"))
+DAGGER_RETRAIN_EVERY = int(os.environ.get("DAGGER_RETRAIN_EVERY", "20"))
 
 # Shell Racing Legends BLE protocol
 CONTROL_CHAR_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
@@ -120,6 +121,9 @@ class CarState:
         self.autonomous: bool = False
         self.last_intent: SteeringIntent | None = None
         self.strategy: CarStrategy = CarStrategy()
+        self.dagger_override: dict | None = None  # {label, expires_at}
+        self.dagger_corrections: int = 0
+        self.dagger_retraining: bool = False
 
 
 car = CarState()
@@ -380,11 +384,23 @@ async def perception_loop() -> None:
                         perception.deadband = _DEADBAND_MAP.get(s.corner_behaviour, 0.12)
                     frame = await frame_source.read_bgr()
                     if frame is not None:
-                        intent = perception.predict(frame)
-                        # Apply throttle aggressiveness: gate forward on confidence.
-                        conf_threshold = (1.0 - s.throttle_aggressiveness) * 0.6
-                        if intent.forward and intent.confidence < conf_threshold:
-                            intent = SteeringIntent.stop("conservative strategy")
+                        # DAgger override: use human correction instead of model.
+                        override = car.dagger_override
+                        if override and time.monotonic() < override["expires_at"]:
+                            lbl = override["label"]
+                            intent = SteeringIntent(
+                                forward=1, reverse=0,
+                                left=1 if lbl == 0 else 0,
+                                right=1 if lbl == 2 else 0,
+                                confidence=1.0,
+                                reason=f"dagger label={lbl}",
+                            )
+                        else:
+                            car.dagger_override = None
+                            intent = perception.predict(frame)
+                            conf_threshold = (1.0 - s.throttle_aggressiveness) * 0.6
+                            if intent.forward and intent.confidence < conf_threshold:
+                                intent = SteeringIntent.stop("conservative strategy")
                         car.last_intent = intent
                         car.control[1] = intent.forward
                         car.control[2] = intent.reverse
@@ -571,6 +587,9 @@ async def car_status():
         "boost_remaining_s": round(boost.remaining(), 2),
         "perception": perception.name,
         "strategy": car.strategy.to_dict(),
+        "dagger_corrections": car.dagger_corrections,
+        "dagger_retraining": car.dagger_retraining,
+        "dagger_next_retrain_in": DAGGER_RETRAIN_EVERY - (car.dagger_corrections % DAGGER_RETRAIN_EVERY),
         "last_intent": (
             None if intent is None
             else {
@@ -818,6 +837,31 @@ class SampleInput(BaseModel):
     label: int  # 0=left  1=straight  2=right
 
 
+def _save_training_sample(frame: np.ndarray, label: int) -> tuple[str, int]:
+    """Save a single frame + label to the training dataset. Thread-safe.
+
+    Returns (filename, index). Raises on encode failure.
+    """
+    frame_dir = TRAINING_DATA_DIR / "frames"
+    label_csv = TRAINING_DATA_DIR / "labels.csv"
+    with _training_lock:
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(frame_dir.glob("*.jpg"))
+        idx = int(existing[-1].stem) + 1 if existing else 0
+        fname = f"{idx:06d}.jpg"
+        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if not ok:
+            raise RuntimeError("JPEG encode failed")
+        (frame_dir / fname).write_bytes(encoded.tobytes())
+        write_header = not label_csv.exists()
+        with open(label_csv, "a", newline="") as f:
+            w = csv.writer(f)
+            if write_header:
+                w.writerow(["frame", "label"])
+            w.writerow([fname, label])
+    return fname, idx
+
+
 @app.post("/training/sample")
 async def training_sample(inp: SampleInput):
     """Grab the current camera frame and save it with the given label.
@@ -827,32 +871,13 @@ async def training_sample(inp: SampleInput):
     """
     if inp.label not in (0, 1, 2):
         return JSONResponse({"error": "label must be 0, 1, or 2"}, status_code=400)
-
     frame = await frame_source.read_bgr()
     if frame is None:
         return JSONResponse({"error": "No frame"}, status_code=503)
-
-    frame_dir = TRAINING_DATA_DIR / "frames"
-    label_csv = TRAINING_DATA_DIR / "labels.csv"
-
-    with _training_lock:
-        frame_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(frame_dir.glob("*.jpg"))
-        idx = int(existing[-1].stem) + 1 if existing else 0
-
-        fname = f"{idx:06d}.jpg"
-        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not ok:
-            return JSONResponse({"error": "Encode failed"}, status_code=500)
-        (frame_dir / fname).write_bytes(encoded.tobytes())
-
-        write_header = not label_csv.exists()
-        with open(label_csv, "a", newline="") as f:
-            w = csv.writer(f)
-            if write_header:
-                w.writerow(["frame", "label"])
-            w.writerow([fname, inp.label])
-
+    try:
+        fname, idx = _save_training_sample(frame, inp.label)
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
     return {"frame": fname, "label": inp.label, "idx": idx}
 
 
@@ -895,35 +920,92 @@ async def training_clear():
     return {"deleted_frames": deleted}
 
 
-@app.post("/training/run")
-async def training_run():
-    """Kick off train.py in a subprocess and stream back the result.
-
-    Runs in a thread so it doesn't block the event loop.
-    """
+def _run_train_subprocess():
     import subprocess
     train_script = Path(__file__).resolve().parent.parent / "training" / "train.py"
     python = Path(__file__).resolve().parent / ".venv" / "bin" / "python"
+    return subprocess.run(
+        [str(python), str(train_script)],
+        capture_output=True, text=True, timeout=300,
+    )
+
+
+async def _dagger_retrain() -> None:
+    if car.dagger_retraining:
+        return
+    car.dagger_retraining = True
+    log.info("DAgger: starting auto-retrain (%d total corrections)", car.dagger_corrections)
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _run_train_subprocess)
+        if result.returncode == 0:
+            log.info("DAgger: retraining complete — reloading weights")
+            if hasattr(perception, "reload"):
+                perception.reload()
+        else:
+            log.warning("DAgger: train.py failed: %s", (result.stdout + result.stderr)[-300:])
+    except Exception as exc:
+        log.warning("DAgger: retrain failed: %s", exc)
+    finally:
+        car.dagger_retraining = False
+
+
+@app.post("/training/run")
+async def training_run():
+    """Kick off train.py in a subprocess and stream back the result."""
+    train_script = Path(__file__).resolve().parent.parent / "training" / "train.py"
     if not train_script.exists():
         return JSONResponse({"error": "training/train.py not found"}, status_code=404)
-
-    def _run():
-        result = subprocess.run(
-            [str(python), str(train_script)],
-            capture_output=True, text=True, timeout=300,
-        )
-        return result
-
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _run)
+        result = await loop.run_in_executor(None, _run_train_subprocess)
         output = (result.stdout + result.stderr).strip()
         lines  = [l for l in output.splitlines() if l.strip()]
         if result.returncode == 0:
+            if hasattr(perception, "reload"):
+                perception.reload()
             return {"ok": True, "message": lines[-1] if lines else "Done"}
         return JSONResponse({"ok": False, "message": output[-500:]}, status_code=500)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+class DaggerCorrectionInput(BaseModel):
+    label: int  # 0=left  1=straight  2=right
+
+
+@app.post("/training/dagger_correction")
+async def dagger_correction(inp: DaggerCorrectionInput):
+    """DAgger correction endpoint.
+
+    Called by the driver UI whenever the user presses WASD while in AUTO
+    mode. Saves the current frame with the user's label, then sets a
+    400 ms steering override so the car physically turns as directed.
+    Every DAGGER_RETRAIN_EVERY corrections triggers background retraining.
+    """
+    if not car.autonomous or not car.connected:
+        return JSONResponse({"error": "not in autonomous mode"}, status_code=409)
+    if inp.label not in (0, 1, 2):
+        return JSONResponse({"error": "label must be 0, 1, or 2"}, status_code=400)
+
+    frame = await frame_source.read_bgr()
+    if frame is not None:
+        try:
+            _save_training_sample(frame, inp.label)
+        except Exception as exc:
+            log.warning("DAgger: frame save failed: %s", exc)
+
+    car.dagger_override = {"label": inp.label, "expires_at": time.monotonic() + 0.4}
+    car.dagger_corrections += 1
+
+    if car.dagger_corrections % DAGGER_RETRAIN_EVERY == 0:
+        asyncio.create_task(_dagger_retrain())
+
+    return {
+        "corrections": car.dagger_corrections,
+        "retraining": car.dagger_retraining,
+        "next_retrain_in": DAGGER_RETRAIN_EVERY - (car.dagger_corrections % DAGGER_RETRAIN_EVERY),
+    }
 
 
 # ── Chat / crowd strategy endpoints ─────────────────────────────────────────

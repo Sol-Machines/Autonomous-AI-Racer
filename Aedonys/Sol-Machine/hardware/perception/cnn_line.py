@@ -32,8 +32,9 @@ class CNNLineFollower:
         roi_top: float = 0.55,
         deadband: float = 0.12,
     ):
-        self.roi_top  = float(roi_top)
-        self.deadband = float(deadband)
+        self.roi_top       = float(roi_top)
+        self.deadband      = float(deadband)
+        self._weights_path = weights_path
         path = Path(os.path.expanduser(str(weights_path)))
 
         if not path.exists():
@@ -89,3 +90,15 @@ class CNNLineFollower:
             confidence=conf,
             reason=f"cnn={label} p={conf:.2f}",
         )
+
+    def reload(self) -> None:
+        """Hot-swap model weights after DAgger retraining — no server restart needed."""
+        try:
+            self._model = self._torch.jit.load(
+                str(Path(os.path.expanduser(str(self._weights_path)))),
+                map_location="cpu",
+            )
+            self._model.eval()
+            log.info("CNNLineFollower: weights reloaded")
+        except Exception as exc:
+            log.warning("CNNLineFollower: reload failed: %s", exc)

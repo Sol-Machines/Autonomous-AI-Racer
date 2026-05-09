@@ -451,6 +451,8 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
       <button id="train-btn">&#9654; Train now</button>
       <button id="clear-btn">&#128465; Clear data</button>
       <span id="train-status"></span>
+      <span id="dagger-count" style="font-size:11px;color:var(--muted)">0 corrections</span>
+      <span id="dagger-status" class="val"></span>
     </div>
   </div>
 
@@ -713,6 +715,34 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     } catch (_) {}
   }
 
+  // ── DAgger correction UI ──────────────────────────────────────────────────
+  let _lastCorrectionCount = 0;
+
+  function updateDaggerUI(corrections, retraining) {
+    document.getElementById('dagger-count').textContent = corrections + ' corrections';
+    const s = document.getElementById('dagger-status');
+    if (retraining) {
+      s.textContent = 'Retraining…';
+      s.className = 'val warn';
+    } else if (corrections > 0 && corrections !== _lastCorrectionCount && corrections % 20 === 0) {
+      s.textContent = 'Model updated ✓';
+      s.className = 'val ok';
+      setTimeout(() => { s.textContent = ''; s.className = 'val'; }, 4000);
+    }
+    _lastCorrectionCount = corrections;
+  }
+
+  async function sendDaggerCorrection(label) {
+    try {
+      const d = await fetch('/training/dagger_correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label }),
+      }).then(r => r.json());
+      if (d.corrections !== undefined) updateDaggerUI(d.corrections, d.retraining);
+    } catch (_) {}
+  }
+
   document.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     if (!(k in keys)) return;
@@ -720,7 +750,13 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
     if (keys[k]) return;
     keys[k] = true;
     keyEl(k).classList.add('active');
-    sendControl();
+    if (autonomous && (k === 'a' || k === 'd' || k === 'w')) {
+      // DAgger: user is correcting the autonomous car — save frame + steer.
+      const labelMap = { a: 0, w: 1, d: 2 };
+      sendDaggerCorrection(labelMap[k]);
+    } else {
+      sendControl();
+    }
   });
 
   document.addEventListener('keyup', (e) => {
@@ -1012,6 +1048,10 @@ button.secondary.connected { color: #4c4; border-color: #1a4a1a; background: #0d
       const intent = cs.last_intent;
       document.getElementById('s-intent').textContent = intent ? intent.reason : '–';
       if (autonomous) updateDirectionOverlay(intent);
+
+      if (cs.dagger_corrections !== undefined) {
+        updateDaggerUI(cs.dagger_corrections, cs.dagger_retraining);
+      }
 
       const banner = document.getElementById('boost-banner');
       const bar    = document.getElementById('boost-bar');
