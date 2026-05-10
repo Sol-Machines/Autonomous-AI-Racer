@@ -72,9 +72,15 @@ export default function BetPanel({
             ⏳ AWAITING NEXT RACE
           </div>
         ) : isBoost ? (
-          <div className="text-[11px] text-[#ff4400] animate-pulse tracking-widest">
-            ⚡ BOOSTING {countdown}s
-          </div>
+          cycle?.winnerCarId ? (
+            <div className="text-[11px] text-[#ff4400] animate-pulse tracking-widest">
+              ⚡ BOOSTING {cycle.winnerCarId} · {countdown}s
+            </div>
+          ) : (
+            <div className="text-[11px] text-[#888] tracking-widest">
+              TIED — NO BOOST · {countdown}s
+            </div>
+          )
         ) : isFinalizing ? (
           <div className="text-[11px] text-[#ff8800] animate-pulse tracking-widest">
             AUTHENTICATING…

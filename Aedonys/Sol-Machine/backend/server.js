@@ -824,8 +824,8 @@ function isCarAllowedForBet(bet, carId) {
 */
 
 // Finds the winning car for a cycle by counting confirmed votes.
-// Ties are broken alphabetically by car_id because of ORDER BY car_id ASC.
-// If no one voted, default to Car 1 for now.
+// Returns null when there are no votes, or when two or more cars share the
+// highest vote count — in either case no boost should be performed.
 function getWinningCarForCycle(cycleId) {
   const rows = db.prepare(`
     SELECT car_id, COUNT(*) AS vote_count
@@ -835,7 +835,9 @@ function getWinningCarForCycle(cycleId) {
     ORDER BY vote_count DESC, car_id ASC
   `).all(cycleId);
 
-  return rows.length ? rows[0].car_id : "Car 1";
+  if (rows.length === 0) return null;
+  if (rows.length > 1 && rows[0].vote_count === rows[1].vote_count) return null;
+  return rows[0].car_id;
 }
 
 /*

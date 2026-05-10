@@ -257,10 +257,9 @@ export default function HomePage() {
   const submitBoostVote = async (carId: string) => {
     if (!walletAddress || cycle?.state !== "voting") return;
     if (votedCycleId === cycle.id || isSubmittingVote) return;
-    if (!BETTING_ENABLED) {
-      alert("Voting is closed — no race has been scheduled yet.");
-      return;
-    }
+    // BETTING_ENABLED gates pre-race betting only — voting is governed by
+    // cycle.state === "voting", which the backend only enters once a race
+    // is actually running, so no extra client-side gate is needed here.
     if (walletMode !== "phantom") {
       alert("Connect Phantom to vote.");
       return;
