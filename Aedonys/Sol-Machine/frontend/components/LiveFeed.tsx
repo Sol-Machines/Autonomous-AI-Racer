@@ -6,19 +6,18 @@ import type { Cycle } from "@/lib/types";
 interface LiveFeedProps {
   cycle: Cycle | null;
   liveCarId: string;
+  countdown: number;
 }
 
-export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
+export default function LiveFeed({ cycle, liveCarId, countdown }: LiveFeedProps) {
   const [feedError, setFeedError] = useState(false);
   const [feedKey, setFeedKey] = useState(0);
 
-  const isBoost = cycle?.state === "boost";
-  const isFinalizing = cycle?.state === "finalizing";
-  const isRacing =
-    cycle?.state === "starting" ||
-    cycle?.state === "voting" ||
-    cycle?.state === "boost" ||
-    cycle?.state === "finalizing";
+  const state = cycle?.state ?? null;
+  const isStarting = state === "starting";
+  const isBoost = state === "boost";
+  const isFinalizing = state === "finalizing";
+  const isRacing = state === "voting" || state === "boost" || state === "finalizing";
   const winner = cycle?.winnerCarId;
 
   const retry = () => {
@@ -28,7 +27,9 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
 
   return (
     <div className="flex-1 relative bg-black min-h-0 flex items-center justify-center overflow-hidden">
-      {isRacing ? (
+
+      {/* ── Race video (voting / boost / finalizing) ── */}
+      {isRacing && (
         <video
           key="race-video"
           src="/race-video.mp4"
@@ -38,30 +39,53 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
           playsInline
           className="live-feed-img object-cover"
         />
-      ) : !feedError ? (
-        <img
-          key={feedKey}
-          src="/api/camera/stream.mjpeg"
-          alt="Live camera feed"
-          className="live-feed-img"
-          onError={() => setFeedError(true)}
-        />
-      ) : (
-        <div className="flex flex-col items-center gap-3 text-[#333]">
-          <div className="text-5xl">📷</div>
-          <div className="text-sm text-[#444]">
-            Camera offline — {liveCarId}
+      )}
+
+      {/* ── Camera stream (idle / starting / error fallback) ── */}
+      {!isRacing && (
+        !feedError ? (
+          <img
+            key={feedKey}
+            src="/api/camera/stream.mjpeg"
+            alt="Live camera feed"
+            className="live-feed-img"
+            onError={() => setFeedError(true)}
+          />
+        ) : (
+          <div className="flex flex-col items-center gap-3 text-[#333]">
+            <div className="text-5xl">📷</div>
+            <div className="text-sm text-[#444]">
+              Camera offline — {liveCarId}
+            </div>
+            <button
+              onClick={retry}
+              className="text-[11px] px-3 py-1 border border-[#333] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors"
+            >
+              RETRY
+            </button>
           </div>
-          <button
-            onClick={retry}
-            className="text-[11px] px-3 py-1 border border-[#333] text-[#555] hover:border-[#555] hover:text-[#888] transition-colors"
+        )
+      )}
+
+      {/* ── Countdown overlay (starting state) ── */}
+      {isStarting && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none bg-black/60">
+          <div className="text-[11px] tracking-[0.3em] text-[#ff8800] mb-4 uppercase">
+            Race Starts In
+          </div>
+          <div
+            className="font-bold text-white leading-none"
+            style={{
+              fontSize: "clamp(80px, 22vw, 180px)",
+              textShadow: "0 0 40px #ff4400, 0 0 80px #ff4400",
+            }}
           >
-            RETRY
-          </button>
+            {countdown}
+          </div>
         </div>
       )}
 
-      {/* Boost overlay */}
+      {/* ── Boost overlay ── */}
       {isBoost && winner && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div
@@ -76,14 +100,14 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
         </div>
       )}
 
-      {/* Winner label during boost */}
+      {/* ── Winner label during boost ── */}
       {isBoost && winner && (
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#111]/90 border border-[#ff4400] px-4 py-1.5 text-[12px] tracking-widest text-[#ff8800] pointer-events-none">
           {winner.toUpperCase()} BOOSTED
         </div>
       )}
 
-      {/* Finalizing overlay */}
+      {/* ── Finalizing overlay ── */}
       {isFinalizing && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center pointer-events-none">
           <div className="text-[#ff8800] text-sm tracking-[0.2em] animate-pulse">
@@ -92,8 +116,8 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
         </div>
       )}
 
-      {/* Live badge on feed */}
-      {(isRacing || !feedError) && (
+      {/* ── Live badge ── */}
+      {(isRacing || isStarting || !feedError) && (
         <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/70 px-2 py-0.5 pointer-events-none">
           <div className="w-1.5 h-1.5 rounded-full bg-[#ff4400] animate-pulse" />
           <span className="text-[9px] text-[#ff8800] tracking-widest">

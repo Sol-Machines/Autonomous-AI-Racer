@@ -411,7 +411,7 @@ export default function HomePage() {
         onLiveCarChange={handleLiveCarChange}
       />
       <div className="flex-1 flex flex-col min-h-0">
-        <LiveFeed cycle={cycle} liveCarId={liveCarId} />
+        <LiveFeed cycle={cycle} liveCarId={liveCarId} countdown={countdown} />
         <ChatPanel carAddress={carAddress} />
         <div className="bg-[#0c0c0c] border-t border-[#1e1e1e] shrink-0">
           <CarGrid
