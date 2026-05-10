@@ -56,6 +56,9 @@ export default function HomePage() {
   // ── Vote ─────────────────────────────────────────────────────────────────────
   const [votedCycleId, setVotedCycleId] = useState<number | null>(null);
   const [isSubmittingVote, setIsSubmittingVote] = useState(false);
+  const [boostTokens, setBoostTokens] = useState<{
+    granted: number; spent: number; remaining: number;
+  } | null>(null);
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -124,6 +127,28 @@ export default function HomePage() {
     const id = setInterval(pollVoteTotals, 2000);
     return () => clearInterval(id);
   }, [cycle?.state, pollVoteTotals]);
+
+  // Poll the wallet's boost-token balance once a race exists, so the user
+  // can see how many votes they have left before the voting phase starts.
+  const pollBoostTokens = useCallback(async () => {
+    if (!walletAddress || !cycle) { setBoostTokens(null); return; }
+    try {
+      const res = await fetch(
+        `/api/boost-balance?wallet=${encodeURIComponent(walletAddress)}`,
+        { cache: "no-store" }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setBoostTokens(data.boostTokens ?? null);
+    } catch (_) {}
+  }, [walletAddress, cycle?.raceId]);
+
+  useEffect(() => {
+    if (!walletAddress || !cycle) { setBoostTokens(null); return; }
+    pollBoostTokens();
+    const id = setInterval(pollBoostTokens, 2000);
+    return () => clearInterval(id);
+  }, [walletAddress, cycle?.raceId, pollBoostTokens]);
 
   // ── Countdown ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -407,6 +432,7 @@ export default function HomePage() {
             votedCycleId={votedCycleId}
             isSubmittingVote={isSubmittingVote}
             countdown={countdown}
+            boostTokens={boostTokens}
             onStakeChange={setSelectedStake}
             onPlaceBet={placeBet}
             onBoostVote={() => selectedCarId && submitBoostVote(selectedCarId)}

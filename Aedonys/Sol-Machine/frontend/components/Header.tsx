@@ -24,7 +24,11 @@ export default function Header({
   cycle, countdown, walletAddress, walletMode, onConnectWallet,
 }: HeaderProps) {
   const state = cycle?.state ?? "idle";
-  const stateStyle = STATE_STYLES[state] ?? STATE_STYLES.idle;
+  // Tone the chip down when the boost cycle has no winner (tied / no votes).
+  const stateStyle =
+    state === "boost" && !cycle?.winnerCarId
+      ? "text-[#888] border-[#444]"
+      : STATE_STYLES[state] ?? STATE_STYLES.idle;
   const short = walletAddress
     ? `${walletAddress.slice(0, 4)}…${walletAddress.slice(-4)}`
     : "—";
@@ -34,7 +38,11 @@ export default function Header({
     if (state === "starting")   return `RACE IN ${countdown}s`;
     if (state === "voting")     return `VOTE ${countdown}s`;
     if (state === "finalizing") return `FINALIZING ${countdown}s`;
-    if (state === "boost")      return `⚡ BOOST ${countdown}s`;
+    if (state === "boost") {
+      // No winner = tied or zero votes. The cycle still ticks for timing
+      // consistency, but the label should make it clear no boost fires.
+      return cycle.winnerCarId ? `⚡ BOOST ${countdown}s` : `NO BOOST ${countdown}s`;
+    }
     return (state as string).toUpperCase();
   };
 

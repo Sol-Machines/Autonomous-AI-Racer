@@ -11,6 +11,7 @@ interface BetPanelProps {
   votedCycleId: number | null;
   isSubmittingVote: boolean;
   countdown: number;
+  boostTokens: { granted: number; spent: number; remaining: number } | null;
   onStakeChange: (stake: number) => void;
   onPlaceBet: () => void;
   onBoostVote: () => void;
@@ -20,7 +21,7 @@ const STAKES = [1, 5, 10];
 
 export default function BetPanel({
   cycle, bet, selectedCarId, selectedStake, isPlacingBet,
-  votedCycleId, isSubmittingVote, countdown,
+  votedCycleId, isSubmittingVote, countdown, boostTokens,
   onStakeChange, onPlaceBet, onBoostVote,
 }: BetPanelProps) {
   const state = cycle?.state ?? null;
@@ -33,6 +34,8 @@ export default function BetPanel({
   const isFinalizing = state === "finalizing";
   const hasBet = bet.status === "confirmed" || bet.status === "won" || bet.status === "lost";
   const hasVoted = votedCycleId === cycle?.id;
+  const tokensRemaining = boostTokens?.remaining ?? null;
+  const noTokensLeft = tokensRemaining !== null && tokensRemaining <= 0;
 
   return (
     <div className="flex items-center gap-3 px-3 py-2 border-t border-[#1a1a1a] flex-wrap min-h-[44px]">
@@ -86,8 +89,20 @@ export default function BetPanel({
             AUTHENTICATING…
           </div>
         ) : isVoting ? (
-          <div className="text-[11px] text-[#44ff44] tracking-wider">
-            VOTE OPEN — {countdown}s remaining
+          <div className="flex items-center gap-3 text-[11px] tracking-wider">
+            <span className="text-[#44ff44]">VOTE OPEN — {countdown}s</span>
+            {boostTokens && (
+              <span
+                className={`text-[10px] uppercase tracking-widest border px-1.5 py-0.5 ${
+                  noTokensLeft
+                    ? "border-[#5a3a00] text-[#aa7733]"
+                    : "border-[#2a6a2a] text-[#88dd88]"
+                }`}
+                title="Each confirmed bet grants 1 boost token per race."
+              >
+                Tokens {boostTokens.remaining}/{boostTokens.granted}
+              </span>
+            )}
           </div>
         ) : null}
       </div>
@@ -121,13 +136,16 @@ export default function BetPanel({
         {isVoting && (
           <button
             onClick={onBoostVote}
-            disabled={!selectedCarId || hasVoted || isSubmittingVote}
-            className="text-[12px] px-5 py-1.5 tracking-widest btn-boost"
+            disabled={!selectedCarId || hasVoted || isSubmittingVote || noTokensLeft}
+            className="text-[12px] px-5 py-1.5 tracking-widest btn-boost disabled:opacity-30"
+            title={noTokensLeft ? "You have used all your boost tokens for this race." : undefined}
           >
             {isSubmittingVote
               ? "VOTING…"
               : hasVoted
               ? "VOTED ✓"
+              : noTokensLeft
+              ? "NO TOKENS LEFT"
               : "⚡ BOOST VOTE"}
           </button>
         )}
