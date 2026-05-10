@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { CarStatus } from "@/lib/admin-types";
 
 interface CameraDriveProps {
@@ -12,13 +12,8 @@ interface CameraDriveProps {
 export default function CameraDrive({ carStatus, keys, onToggleAutonomous }: CameraDriveProps) {
   const [feedError, setFeedError] = useState(false);
   const [feedKey, setFeedKey] = useState(0);
-  const [raceBackend, setRaceBackend] = useState("http://localhost:3000");
   const auto = carStatus.autonomous ?? false;
   const intent = carStatus.last_intent;
-
-  useEffect(() => {
-    setRaceBackend(process.env.NEXT_PUBLIC_RACE_BACKEND || "http://localhost:3000");
-  }, []);
 
   // Direction overlay (in AUTO mode)
   const dirInfo = (() => {
@@ -60,7 +55,7 @@ export default function CameraDrive({ carStatus, keys, onToggleAutonomous }: Cam
         {!feedError ? (
           <img
             key={feedKey}
-            src={`${raceBackend}/camera/stream.mjpeg`}
+            src="/api/camera/stream.mjpeg"
             alt="Live"
             className="w-full h-full object-contain"
             onError={() => setFeedError(true)}

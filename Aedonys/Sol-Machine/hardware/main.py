@@ -17,11 +17,12 @@ import os
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import cv2
 import numpy as np
-from bleak import BleakClient, BleakScanner
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +31,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+
+DEMO_MODE = os.environ.get("DEMO_MODE", "0").lower() in ("1", "true", "yes", "on")
+
+if not DEMO_MODE:
+    from bleak import BleakClient, BleakScanner
+else:
+    BleakClient = None  # type: ignore
+    BleakScanner = None  # type: ignore
 
 from boost import BoostEvent, BoostManager
 from crowd_agent import CarStrategy, CrowdAgent
@@ -58,6 +67,25 @@ USE_LAPTOP_CAMERA = os.environ.get("USE_LAPTOP_CAMERA", "0").lower() in (
     "1", "true", "yes", "on",
 )
 LAPTOP_CAMERA_INDEX = int(os.environ.get("LAPTOP_CAMERA_INDEX", "0"))
+
+# Demo mode: loop a local MP4 instead of opening RTSP / webcam.
+DEMO_VIDEO_PATH = os.environ.get(
+    "DEMO_VIDEO_PATH",
+    str(Path(__file__).resolve().parent.parent / "media" / "demo.mp4"),
+)
+DEMO_TZ = ZoneInfo(os.environ.get("DEMO_TZ", "Europe/London"))
+
+
+def _next_race_datetime() -> datetime:
+    """Next Friday at 21:00 in DEMO_TZ. Rolls forward if already past."""
+    now = datetime.now(DEMO_TZ)
+    days_ahead = (4 - now.weekday()) % 7  # Mon=0, Fri=4
+    candidate = (now + timedelta(days=days_ahead)).replace(
+        hour=21, minute=0, second=0, microsecond=0,
+    )
+    if candidate <= now:
+        candidate += timedelta(days=7)
+    return candidate
 
 PERCEPTION_BACKEND = os.environ.get("PERCEPTION_BACKEND", "opencv").lower()
 PERCEPTION_HZ = max(1, int(os.environ.get("PERCEPTION_HZ", "10")))
@@ -314,6 +342,161 @@ class FrameSource:
         }
 
 
+class VideoLoopSource:
+    """Loops a local MP4 file at its native frame rate.
+
+    Drop-in replacement for FrameSource in DEMO_MODE — exposes the same
+    methods (read_bgr, latest_age, latest_jpeg, stats). If the file is
+    missing or unreadable, yields a placeholder frame so the WebSocket
+    still has something to send.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._cap: cv2.VideoCapture | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._latest: np.ndarray | None = None
+        self._latest_at: float = 0.0
+        self._latest_jpeg: bytes | None = None
+        self._latest_jpeg_seq: int = 0
+        self._loops: int = 0
+        self._reads_ok: int = 0
+        self._fps: float = 30.0
+
+    def _open(self) -> cv2.VideoCapture | None:
+        if not Path(self._path).exists():
+            return None
+        cap = cv2.VideoCapture(self._path)
+        if not cap or not cap.isOpened():
+            return None
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            self._fps = float(fps) if fps > 0 else 30.0
+        except Exception:
+            self._fps = 30.0
+        return cap
+
+    def _placeholder(self) -> np.ndarray:
+        frame = np.zeros((360, 640, 3), dtype=np.uint8)
+        # Subtle gradient so it doesn't look like a dead pixel.
+        for y in range(360):
+            frame[y, :] = (10 + y // 18, 10 + y // 18, 20 + y // 12)
+
+        race_dt = _next_race_datetime()
+        date_str = race_dt.strftime("%A %-d %B")        # "Friday 15 May"
+        time_str = race_dt.strftime("%-I:%M %p (UK)")   # "9:00 PM (UK)"
+        title = "LIVE STREAM RESUMES"
+
+        def _put_centered(text: str, y: int, scale: float, thickness: int, color):
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+            x = (640 - tw) // 2
+            cv2.putText(
+                frame, text, (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA,
+            )
+
+        _put_centered(title,    140, 0.85, 2, (100, 200, 255))   # warm orange (BGR)
+        _put_centered(date_str, 200, 1.10, 2, (240, 240, 240))   # near-white
+        _put_centered(time_str, 245, 0.80, 2, (200, 200, 200))   # subdued grey
+        return frame
+
+    async def start(self) -> None:
+        self._stop.clear()
+        self._cap = self._open()
+        if self._cap is not None:
+            log.info("VideoLoopSource: opened %s @ %.1f fps", self._path, self._fps)
+        else:
+            log.warning("VideoLoopSource: %s missing — serving placeholder", self._path)
+        self._thread = threading.Thread(
+            target=self._reader, daemon=True, name="video-loop",
+        )
+        self._thread.start()
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+            self._thread = None
+        if self._cap:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+
+    def _publish(self, frame: np.ndarray) -> None:
+        display = frame
+        if MJPEG_WIDTH > 0 and frame.shape[1] > MJPEG_WIDTH:
+            scale = MJPEG_WIDTH / frame.shape[1]
+            display = cv2.resize(
+                frame, (MJPEG_WIDTH, int(frame.shape[0] * scale)),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        ok_j, buf = cv2.imencode(".jpg", display, [cv2.IMWRITE_JPEG_QUALITY, MJPEG_QUALITY])
+        with self._lock:
+            self._latest = frame
+            self._latest_at = time.monotonic()
+            if ok_j:
+                self._latest_jpeg = buf.tobytes()
+                self._latest_jpeg_seq += 1
+
+    def _reader(self) -> None:
+        last_check = 0.0
+        while not self._stop.is_set():
+            # Re-attempt opening the file every 5s if it wasn't there at startup.
+            if self._cap is None:
+                now = time.monotonic()
+                if now - last_check > 5.0:
+                    self._cap = self._open()
+                    last_check = now
+                    if self._cap is not None:
+                        log.info("VideoLoopSource: %s now available", self._path)
+                if self._cap is None:
+                    self._publish(self._placeholder())
+                    time.sleep(0.5)
+                    continue
+            try:
+                ok, frame = self._cap.read()
+            except Exception:
+                ok, frame = False, None
+            if not ok or frame is None:
+                # End of file → loop.
+                try:
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                except Exception:
+                    self._cap.release()
+                    self._cap = self._open()
+                self._loops += 1
+                continue
+            self._reads_ok += 1
+            frame = _rotate(frame, CAMERA_ROTATE_DEG)
+            self._publish(frame)
+            time.sleep(max(0.0, 1.0 / max(1.0, self._fps)))
+
+    async def read_bgr(self) -> np.ndarray | None:
+        with self._lock:
+            return None if self._latest is None else self._latest.copy()
+
+    def latest_age(self) -> float:
+        with self._lock:
+            return float("inf") if self._latest_at == 0 else time.monotonic() - self._latest_at
+
+    def latest_jpeg(self) -> tuple[bytes | None, int]:
+        with self._lock:
+            return self._latest_jpeg, self._latest_jpeg_seq
+
+    def stats(self) -> dict:
+        return {
+            "url": f"file:{self._path}",
+            "reads_ok": self._reads_ok,
+            "loops": self._loops,
+            "fps": round(self._fps, 1),
+            "latest_age_s": (None if (a := self.latest_age()) == float("inf") else round(a, 3)),
+        }
+
+
 def _rotate(frame: np.ndarray, deg: int) -> np.ndarray:
     if deg == 0:
         return frame
@@ -326,7 +509,7 @@ def _rotate(frame: np.ndarray, deg: int) -> np.ndarray:
     return frame
 
 
-frame_source = FrameSource()
+frame_source = VideoLoopSource(DEMO_VIDEO_PATH) if DEMO_MODE else FrameSource()
 
 
 # ── Control loop (20 Hz BLE writer) ──────────────────────────────────────────
@@ -338,7 +521,9 @@ async def control_loop() -> None:
         # Apply boost: byte 6 (turbo) is 1 whenever a boost is active.
         car.control[6] = 1 if boost.is_active() else 0
 
-        if car.connected and car.ble_client and car.ble_client.is_connected:
+        if DEMO_MODE:
+            pass  # No real car — just hold state and let the boost timer tick.
+        elif car.connected and car.ble_client and car.ble_client.is_connected:
             try:
                 await car.ble_client.write_gatt_char(
                     CONTROL_CHAR_UUID, bytes(car.control), response=False,
@@ -456,12 +641,15 @@ solana = SolanaListener(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Race Mode backend on :%d", PORT)
+    log.info("Race Mode backend on :%d (demo=%s)", PORT, DEMO_MODE)
     log.info("Perception: %s @ %d Hz", perception.name, PERCEPTION_HZ)
-    log.info(
-        "Camera source: %s",
-        f"webcam index {LAPTOP_CAMERA_INDEX}" if USE_LAPTOP_CAMERA else RTSP_URL,
-    )
+    if DEMO_MODE:
+        log.info("Camera source: looped video %s", DEMO_VIDEO_PATH)
+    else:
+        log.info(
+            "Camera source: %s",
+            f"webcam index {LAPTOP_CAMERA_INDEX}" if USE_LAPTOP_CAMERA else RTSP_URL,
+        )
 
     await frame_source.start()
     control_task = asyncio.create_task(control_loop())
@@ -513,6 +701,8 @@ async def cars_known():
 
 @app.post("/car/scan")
 async def car_scan():
+    if DEMO_MODE:
+        return {"cars": KNOWN_CARS}
     if car.scanning:
         return JSONResponse({"error": "Already scanning"}, status_code=409)
     car.scanning = True
@@ -535,6 +725,13 @@ async def car_connect(payload: dict):
         return JSONResponse({"error": "address required"}, status_code=400)
     if car.connected:
         return JSONResponse({"error": "Already connected"}, status_code=409)
+    if DEMO_MODE:
+        car.connected = True
+        car.name = payload.get("name", "Demo Car")
+        car.address = address
+        car.battery = 87
+        car.control = bytearray([1, 0, 0, 0, 0, 0, 0, 0])
+        return {"connected": True, "name": car.name, "address": car.address, "battery": car.battery}
     try:
         client = BleakClient(address)
         await client.connect()
@@ -559,11 +756,12 @@ async def car_connect(payload: dict):
 async def car_disconnect():
     if not car.connected:
         return JSONResponse({"error": "Not connected"}, status_code=409)
-    try:
-        if car.ble_client:
-            await car.ble_client.disconnect()
-    except Exception:
-        pass
+    if not DEMO_MODE:
+        try:
+            if car.ble_client:
+                await car.ble_client.disconnect()
+        except Exception:
+            pass
     car.connected = False
     car.ble_client = None
     car.name = ""
@@ -668,6 +866,8 @@ async def boost_status():
 
 @app.get("/camera/info")
 async def camera_info():
+    if DEMO_MODE:
+        return {"source": "demo", "video_path": DEMO_VIDEO_PATH, "stats": frame_source.stats()}
     if USE_LAPTOP_CAMERA:
         return {"source": "laptop", "stats": frame_source.stats()}
     return {

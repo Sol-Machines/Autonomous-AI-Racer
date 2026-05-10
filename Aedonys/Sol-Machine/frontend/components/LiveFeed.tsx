@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { Cycle } from "@/lib/types";
 
 interface LiveFeedProps {
@@ -11,13 +11,6 @@ interface LiveFeedProps {
 export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
   const [feedError, setFeedError] = useState(false);
   const [feedKey, setFeedKey] = useState(0);
-  const [raceBackend, setRaceBackend] = useState("http://localhost:3000");
-
-  useEffect(() => {
-    // Read NEXT_PUBLIC_RACE_BACKEND only on client
-    const rb = process.env.NEXT_PUBLIC_RACE_BACKEND || "http://localhost:3000";
-    setRaceBackend(rb);
-  }, []);
 
   const isBoost = cycle?.state === "boost";
   const isFinalizing = cycle?.state === "finalizing";
@@ -33,7 +26,7 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
       {!feedError ? (
         <img
           key={feedKey}
-          src={`${raceBackend}/camera/stream.mjpeg`}
+          src="/api/camera/stream.mjpeg"
           alt="Live camera feed"
           className="live-feed-img"
           onError={() => setFeedError(true)}
