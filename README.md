@@ -1,5 +1,34 @@
 # Sol Machine
 
+## Judges Quick Intro
+
+**Live deployment:** https://solmachines.wiktor.uk (hosted on **DigitalOcean**)
+
+**One-line pitch:** Spectators pay a Solana SPL token (`$BOOST`) on devnet to physically turbo a self-driving RC car in real time, while an AI agent reads the spectator chat to update the car's driving strategy on the fly.
+
+**Why it's interesting:**
+- An on-chain `$BOOST` SPL transfer on Solana devnet causes a real-world physical action (BLE turbo packet to the RC car) within ~1–2 seconds via a `accountSubscribe` WebSocket subscription on the treasury ATA.
+- A computer-vision-driven RC car (OpenCV or PyTorch CNN) follows a tape track autonomously, with **DAgger online learning** — human keyboard corrections during autonomous driving auto-retrain the CNN every 20 corrections and hot-reload weights with no restart.
+- An OpenAI `o4-mini` "CrowdAgent" reads spectator chat every N messages and emits a structured `CarStrategy` (throttle aggressiveness, boost policy, etc.) that is applied live to the perception loop.
+
+**Tech stack at a glance:** Solana devnet + `$BOOST` SPL token, Phantom Wallet, `@solana/web3.js`, `@solana/spl-token`, OpenAI `o4-mini`, PyTorch (TorchScript) + DAgger, OpenCV, Python FastAPI, `bleak` BLE, Node.js + Express + SQLite, Next.js + React + TypeScript + Tailwind, Raspberry Pi Zero 2 W + Pi Camera Module 3, `go2rtc` + RTSP/H.264, DigitalOcean for deployment, Claude Code as the primary AI dev tool.
+
+**Live $BOOST token (Solana devnet):**
+- Mint: `3rTR28PEaZRxGdXxsqAV7jQFjhB5v76bE2PqZv9rnCV9`
+- Treasury: `CGKs9nAfT8GZFsk6Fr2MvYGaDdLqFc1P83rippv1Frmp`
+- Decimals: `0` · Supply: 1,000,000 in treasury + 100,000 in faucet
+
+**Where to look first (judges):**
+1. Open https://solmachines.wiktor.uk to see the deployed spectator UI.
+2. Read [`Aedonys/Sol-Machine/hardware/main.py`](Aedonys/Sol-Machine/hardware/main.py) — the FastAPI hub for BLE, perception, boost, Solana listener, DAgger, and chat.
+3. Read [`Aedonys/Sol-Machine/hardware/solana_listener.py`](Aedonys/Sol-Machine/hardware/solana_listener.py) — the Solana → physical-action bridge.
+4. Read [`Aedonys/Sol-Machine/hardware/crowd_agent.py`](Aedonys/Sol-Machine/hardware/crowd_agent.py) — the OpenAI structured-output strategy agent.
+5. Read [`Aedonys/Sol-Machine/solana/mint.ts`](Aedonys/Sol-Machine/solana/mint.ts) and [`faucet.ts`](Aedonys/Sol-Machine/solana/faucet.ts) — token + faucet setup.
+
+> Physical hardware (Pi + RC car) is **not** part of the deployed website — that is the live demo at the venue. The deployed site shows the spectator/admin UI, Solana payment flow, betting cycle, and chat agent, with the hardware backend stubbed when the car is not connected.
+
+---
+
 Sol Machine is an autonomous RC racing and spectator-control project. It combines a physical camera-equipped racing car, computer vision line following, a betting/voting race interface, Solana devnet payment helpers, and an AI-assisted crowd strategy chat.
 
 The active application lives in `Aedonys/Sol-Machine/`.
@@ -86,6 +115,44 @@ Owns:
 
 ## Setup
 
+### Linux / macOS (bash)
+
+Install frontend dependencies:
+
+```bash
+cd Aedonys/Sol-Machine/frontend
+npm install
+```
+
+Install race backend dependencies:
+
+```bash
+cd Aedonys/Sol-Machine/backend
+npm install
+```
+
+Create a Python environment for the hardware backend:
+
+```bash
+cd Aedonys/Sol-Machine/hardware
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+# Optional: install PyTorch (CPU build) only if you plan to use the CNN perception backend
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+Create local environment configuration:
+
+```bash
+cd Aedonys/Sol-Machine
+cp .env.example .env
+```
+
+Then edit `.env` for your hardware, camera, Solana, and OpenAI settings.
+
+### Windows (PowerShell)
+
 Install frontend dependencies:
 
 ```powershell
@@ -122,6 +189,40 @@ Then edit `.env` for your hardware, camera, Solana, and OpenAI settings.
 
 Use three terminals.
 
+### Linux / macOS (bash)
+
+Terminal 1, hardware backend:
+
+```bash
+cd Aedonys/Sol-Machine/hardware
+source .venv/bin/activate
+python main.py
+```
+
+Default URL: `http://localhost:3000`
+
+Terminal 2, race backend:
+
+```bash
+cd Aedonys/Sol-Machine/backend
+npm start
+```
+
+Default URL: `http://localhost:3001`
+
+Terminal 3, frontend:
+
+```bash
+cd Aedonys/Sol-Machine/frontend
+npm run dev
+```
+
+Default URL: `http://localhost:3002`
+
+> Tip: Backend boot takes ~30s while it tries the first RTSP connection. Requests are served normally during that window — it will retry in the background if the Pi/camera is offline.
+
+### Windows (PowerShell)
+
 Terminal 1, hardware backend:
 
 ```powershell
@@ -149,6 +250,29 @@ npm run dev
 ```
 
 Default URL: `http://localhost:3002`
+
+## Solana Devnet Setup
+
+The `$BOOST` SPL token is already deployed on devnet (see addresses in the [Judges Quick Intro](#judges-quick-intro)). To redeploy or run the faucet locally:
+
+```bash
+cd Aedonys/Sol-Machine/solana
+npm install
+
+# Mint a fresh $BOOST token (idempotent — re-running loads existing keypairs/mint from disk)
+npm run mint
+
+# Airdrop $BOOST to a Phantom wallet (devnet)
+npm run faucet -- <PHANTOM_PUBKEY>
+```
+
+After minting, copy the printed mint/treasury addresses into your `.env` (`BOOST_TOKEN_MINT`, `SOLANA_TREASURY_PUBKEY`, `SOLANA_TREASURY_ATA`).
+
+> Devnet airdrops are rate-limited per IP per day. If `solana airdrop` fails, top up keypairs manually at https://faucet.solana.com.
+
+## Deployment
+
+The spectator UI and Node backend are deployed on **DigitalOcean** at https://solmachines.wiktor.uk. The Python hardware backend runs locally next to the RC car at the demo venue (BLE + camera require physical hardware) and connects to the deployed services over the network.
 
 ## Important Environment Variables
 
@@ -242,11 +366,60 @@ Python hardware backend:
 - `GET /training/stats`
 - `POST /training/clear`
 - `POST /training/run`
+- `POST /training/dagger_correction` — DAgger online correction (`{label: 0|1|2}` for left/straight/right)
 - `POST /chat/message`
 - `GET /chat/messages`
 - `GET /chat/strategy`
+- `WS /camera/ws` — pull-mode JPEG stream (client sends `"ready"`, server returns current frame). Eliminates TCP-buffer lag from MJPEG push streams.
+
+## DAgger Online Learning
+
+While the car drives autonomously with the CNN perception backend, pressing `A`/`W`/`D` in AUTO mode submits a human correction:
+
+| Key | Label | Meaning |
+|---|---|---|
+| A | 0 | steer left |
+| W | 1 | go straight |
+| D | 2 | steer right |
+
+Each correction saves the current frame + label to `training/data/` and applies a 400ms steering override. After `DAGGER_RETRAIN_EVERY` corrections (default 20), the CNN auto-retrains in the background via `train.py` and hot-reloads weights — no server restart required.
+
+The driver UI (`hardware/static/index.html`) and admin console show live correction count and "Retraining…" / "Model updated ✓" status.
+
+## Demo Walkthrough (for judges)
+
+1. **Spectator flow (deployed):** Open https://solmachines.wiktor.uk, connect Phantom (devnet), and observe the live race cycle and BOOST button.
+2. **Solana payment → physical action:** A click on BOOST sends 1 `$BOOST` SPL token to the treasury ATA. The Python `SolanaListener` watches the ATA via `accountSubscribe` WebSocket and triggers a turbo packet over BLE to the RC car within ~1–2 seconds.
+3. **Crowd-driven AI strategy:** Type messages in the chat panel — every `CROWD_TRIGGER_N` messages the OpenAI `o4-mini` agent re-reads the chat and emits a structured `CarStrategy` JSON applied to the live perception loop.
+4. **Online learning (admin console):** With perception set to `cnn`, drift the car off the line, press `A`/`D` to correct — watch the DAgger counter increment and the model hot-reload after 20 corrections.
+5. **Perception tuning:** `http://localhost:3000/camera/debug` shows the live binary threshold, ROI, and centroid overlay used by the OpenCV backend.
 
 ## Validation
+
+### Linux / macOS (bash)
+
+Frontend build:
+
+```bash
+cd Aedonys/Sol-Machine/frontend
+npm run build
+```
+
+Node syntax check:
+
+```bash
+cd Aedonys/Sol-Machine/backend
+node --check server.js
+```
+
+Python syntax check:
+
+```bash
+cd Aedonys/Sol-Machine/hardware
+python -m py_compile main.py crowd_agent.py boost.py solana_listener.py perception/base.py perception/opencv_line.py perception/cnn_line.py
+```
+
+### Windows (PowerShell)
 
 Frontend build:
 
