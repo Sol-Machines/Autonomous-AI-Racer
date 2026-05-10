@@ -61,6 +61,13 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 // verification function can do real on-chain checks.
 const DEMO_MODE = process.env.DEMO_MODE !== "false";
 
+// AUTO_INIT_RACE controls whether the backend auto-creates idle races on
+// boot and after each finished race. Default is true (legacy behavior used
+// by local dev). Production / hackathon-demo deployments set this to false
+// so admins explicitly INITIALIZE a race before users can place bets — the
+// frontend treats a null current cycle as "AWAITING NEXT RACE".
+const AUTO_INIT_RACE = process.env.AUTO_INIT_RACE !== "false";
+
 /*
   ------------------------------------------------------------
   APP / BLOCKCHAIN MODE CONFIG
@@ -636,6 +643,11 @@ function startIdleRace(raceId) {
   the race that was just settled.
 */
 function startNextIdleRaceAfterSettlement(settledRaceId) {
+  // With AUTO_INIT_RACE off, the backend leaves the DB without an active
+  // cycle so the frontend shows "AWAITING NEXT RACE" until an admin
+  // explicitly initializes the next race. The settlement still happens.
+  if (!AUTO_INIT_RACE) return null;
+
   const currentCycle = getCurrentCycle();
 
   if (!currentCycle) {
@@ -773,8 +785,11 @@ function triggerHardwareBoostForWinner(winnerCarId, cycleId) {
   });
 }
 
-// If the database is empty, create the first idle race.
+// If the database is empty, create the first idle race — but only when
+// AUTO_INIT_RACE is on. With auto-init disabled, the backend stays empty
+// until an admin explicitly initializes a race via /api/admin/reset-race.
 function seedInitialCycleIfNeeded() {
+  if (!AUTO_INIT_RACE) return;
   if (!getCurrentCycle()) {
     startIdleRace(1);
   }
@@ -914,10 +929,12 @@ function advanceCycleIfNeeded() {
     /*
       Fallback behaviour if automatic mock results are disabled.
 
-      Later, once the real car backend exists, you may want a state like
-      "awaiting_result" here instead of immediately creating the next idle race.
+      With AUTO_INIT_RACE off the backend stops here and the frontend shows
+      "AWAITING NEXT RACE" until an admin creates the next race manually.
     */
-    startIdleRace(cycle.race_id + 1);
+    if (AUTO_INIT_RACE) {
+      startIdleRace(cycle.race_id + 1);
+    }
   }
 }
 
@@ -2057,7 +2074,9 @@ app.get("/api/config", (req, res) => {
 app.get("/api/cycle/current", (req, res) => {
   advanceCycleIfNeeded();
   const cycle = getCurrentCycle();
-  return res.json(serializeCycle(cycle));
+  // No race exists yet — admin hasn't initialized one. The frontend
+  // interprets a null body as "AWAITING NEXT RACE".
+  return res.json(cycle ? serializeCycle(cycle) : null);
 });
 
 /*
@@ -2158,6 +2177,12 @@ app.post("/api/race/start", (req, res) => {
 
   // Get the latest/current cycle after any possible advancement.
   const cycle = getCurrentCycle();
+
+  if (!cycle) {
+    return res.status(400).json({
+      error: "No race has been initialized yet. Admin must initialize a race first."
+    });
+  }
 
   /*
     Only idle races can be started.

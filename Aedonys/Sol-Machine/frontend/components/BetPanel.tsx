@@ -1,7 +1,6 @@
 "use client";
 
 import type { Cycle, BetInfo } from "@/lib/types";
-import { BETTING_ENABLED } from "@/lib/flags";
 
 interface BetPanelProps {
   cycle: Cycle | null;
@@ -24,10 +23,11 @@ export default function BetPanel({
   votedCycleId, isSubmittingVote, countdown,
   onStakeChange, onPlaceBet, onBoostVote,
 }: BetPanelProps) {
-  const state = cycle?.state ?? "idle";
-  const bettingPhase = state === "idle" || state === "starting";
-  const isBettingOpen = BETTING_ENABLED && bettingPhase;
-  const isAwaitingRace = !BETTING_ENABLED && bettingPhase;
+  const state = cycle?.state ?? null;
+  // Betting is open from the moment a race is initialized (idle) through the
+  // pre-race countdown (starting). Voting takes over once the countdown ends.
+  const isAwaitingRace = cycle === null;
+  const isBettingOpen = !!cycle && (state === "idle" || state === "starting");
   const isVoting = state === "voting";
   const isBoost = state === "boost";
   const isFinalizing = state === "finalizing";

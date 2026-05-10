@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { CARS, type Cycle, type BetInfo, type VoteTotals } from "@/lib/types";
-import { BETTING_ENABLED } from "@/lib/flags";
+import { useToast } from "@/components/Toast";
 import Header from "@/components/Header";
 import CarBar from "@/components/CarBar";
 import ChatPanel from "@/components/ChatPanel";
@@ -21,6 +21,8 @@ function getDemoWallet(): string {
 }
 
 export default function HomePage() {
+  const toast = useToast();
+
   // ── Cycle ────────────────────────────────────────────────────────────────────
   const [cycle, setCycle] = useState<Cycle | null>(null);
   const [prevState, setPrevState] = useState<string | null>(null);
@@ -72,9 +74,9 @@ export default function HomePage() {
         cache: "no-store",
       });
       if (!res.ok) return;
-      const data: Cycle = await res.json();
+      const data: Cycle | null = await res.json();
       setCycle((prev) => {
-        if (prev?.state !== data.state) setPrevState(prev?.state ?? null);
+        if (prev?.state !== (data?.state ?? null)) setPrevState(prev?.state ?? null);
         return data;
       });
     } catch (_) {}
@@ -137,14 +139,19 @@ export default function HomePage() {
 
   // ── Reset on new race ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (prevState && prevState !== "idle" && cycle?.state === "idle") {
+    // Reset whenever we transition out of an active race back to either a
+    // fresh idle cycle (admin re-initialized) or to no cycle at all
+    // (auto-init disabled — site goes back to "AWAITING NEXT RACE").
+    const goneIdle = prevState && prevState !== "idle" && cycle?.state === "idle";
+    const goneAway = prevState && prevState !== "idle" && cycle === null;
+    if (goneIdle || goneAway) {
       setBet({ betId: null, carId: null, stakeAmount: null, potentialPayout: null, status: null });
       setSelectedCarId(null);
       setVotedCycleId(null);
       setVoteTotals({});
       localStorage.removeItem("votedCycleId");
     }
-  }, [cycle?.state, prevState]);
+  }, [cycle, prevState]);
 
   // ── Recover bet on load ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -178,7 +185,11 @@ export default function HomePage() {
       (window as any).phantom?.solana ??
       ((window as any).solana?.isPhantom ? (window as any).solana : null);
     if (!provider) {
-      alert("Phantom wallet not detected. Install Phantom from https://phantom.app and reload.");
+      toast({
+        variant: "warning",
+        title: "Phantom not detected",
+        message: "Install Phantom from https://phantom.app and reload.",
+      });
       return;
     }
     try {
@@ -190,26 +201,49 @@ export default function HomePage() {
       const pk = resp?.publicKey?.toString?.() ?? provider.publicKey?.toString?.();
       if (!pk) throw new Error("Phantom did not return a public key");
       setPhantomAddress(pk);
+      toast({
+        variant: "success",
+        title: "Wallet connected",
+        message: `${pk.slice(0, 4)}…${pk.slice(-4)}`,
+      });
     } catch (e: any) {
       console.error("Wallet connect failed", e);
       const msg = e?.message || e?.toString?.() || "Unknown error";
       // User rejected the request — quietly ignore.
       if (e?.code === 4001 || /reject|denied/i.test(msg)) return;
-      alert(
-        "Phantom connect failed: " + msg +
-        "\n\nTry: unlock Phantom, switch network to Devnet, and reload the page."
-      );
+      toast({
+        variant: "error",
+        title: "Phantom connect failed",
+        message: msg + "\nTry: unlock Phantom, switch to Devnet, then reload.",
+        durationMs: 8000,
+      });
     }
   };
 
   const placeBet = async () => {
     if (!selectedCarId || !walletAddress || isPlacingBet) return;
-    if (!BETTING_ENABLED) {
-      alert("Betting is closed — no race has been scheduled yet.");
+    if (!cycle) {
+      toast({
+        variant: "warning",
+        title: "No race scheduled",
+        message: "Wait for an admin to initialize the next race.",
+      });
+      return;
+    }
+    if (cycle.state !== "idle" && cycle.state !== "starting") {
+      toast({
+        variant: "warning",
+        title: "Betting closed",
+        message: "The race has already started — bets are no longer accepted.",
+      });
       return;
     }
     if (walletMode !== "phantom") {
-      alert("Connect Phantom to place a bet.");
+      toast({
+        variant: "warning",
+        title: "Connect Phantom",
+        message: "You need to connect a Phantom wallet to place a bet.",
+      });
       return;
     }
     setIsPlacingBet(true);
@@ -224,7 +258,10 @@ export default function HomePage() {
         }),
       });
       const intentData = await intentRes.json();
-      if (!intentRes.ok) { alert(intentData.error); return; }
+      if (!intentRes.ok) {
+        toast({ variant: "error", title: "Bet rejected", message: intentData.error || "Unknown error" });
+        return;
+      }
 
       const submitRes = await fetch("/api/bet-submit", {
         method: "POST",
@@ -237,7 +274,10 @@ export default function HomePage() {
         }),
       });
       const submitData = await submitRes.json();
-      if (!submitRes.ok) { alert(submitData.error); return; }
+      if (!submitRes.ok) {
+        toast({ variant: "error", title: "Bet rejected", message: submitData.error || "Unknown error" });
+        return;
+      }
 
       setBet({
         betId: submitData.betId,
@@ -246,9 +286,14 @@ export default function HomePage() {
         potentialPayout: submitData.potentialPayout,
         status: "confirmed",
       });
+      toast({
+        variant: "success",
+        title: "Bet placed",
+        message: `${selectedStake} on ${selectedCarId} · pot ${submitData.potentialPayout}`,
+      });
     } catch (e) {
       console.error(e);
-      alert("Bet failed — check console");
+      toast({ variant: "error", title: "Bet failed", message: "Network error — check console for details." });
     } finally {
       setIsPlacingBet(false);
     }
@@ -257,11 +302,12 @@ export default function HomePage() {
   const submitBoostVote = async (carId: string) => {
     if (!walletAddress || cycle?.state !== "voting") return;
     if (votedCycleId === cycle.id || isSubmittingVote) return;
-    // BETTING_ENABLED gates pre-race betting only — voting is governed by
-    // cycle.state === "voting", which the backend only enters once a race
-    // is actually running, so no extra client-side gate is needed here.
     if (walletMode !== "phantom") {
-      alert("Connect Phantom to vote.");
+      toast({
+        variant: "warning",
+        title: "Connect Phantom",
+        message: "You need to connect a Phantom wallet to vote.",
+      });
       return;
     }
     setIsSubmittingVote(true);
@@ -272,7 +318,10 @@ export default function HomePage() {
         body: JSON.stringify({ wallet: walletAddress, carId }),
       });
       const intentData = await intentRes.json();
-      if (!intentRes.ok) { alert(intentData.error); return; }
+      if (!intentRes.ok) {
+        toast({ variant: "error", title: "Vote rejected", message: intentData.error || "Unknown error" });
+        return;
+      }
 
       const submitRes = await fetch("/api/vote-submit", {
         method: "POST",
@@ -285,22 +334,30 @@ export default function HomePage() {
         }),
       });
       const submitData = await submitRes.json();
-      if (!submitRes.ok) { alert(submitData.error); return; }
+      if (!submitRes.ok) {
+        toast({ variant: "error", title: "Vote rejected", message: submitData.error || "Unknown error" });
+        return;
+      }
 
       setVotedCycleId(submitData.cycleId);
       setSelectedCarId(carId);
       localStorage.setItem("votedCycleId", String(submitData.cycleId));
+      toast({
+        variant: "success",
+        title: "Boost vote cast",
+        message: `Voted for ${carId}`,
+      });
     } catch (e) {
       console.error(e);
-      alert("Vote failed — check console");
+      toast({ variant: "error", title: "Vote failed", message: "Network error — check console for details." });
     } finally {
       setIsSubmittingVote(false);
     }
   };
 
   const handleCarClick = (carId: string) => {
-    const state = cycle?.state ?? "idle";
-    if ((state === "idle" || state === "starting") && bet.status !== "confirmed") {
+    const state = cycle?.state ?? null;
+    if (cycle && (state === "idle" || state === "starting") && bet.status !== "confirmed") {
       setSelectedCarId(carId);
     } else if (state === "voting") {
       submitBoostVote(carId);

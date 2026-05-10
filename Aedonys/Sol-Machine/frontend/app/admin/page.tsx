@@ -7,6 +7,7 @@ import type { Cycle, VoteTotals } from "@/lib/types";
 import type {
   CarStatus, BleCar, TrainingStats, BoostStatus, RaceResultStatus,
 } from "@/lib/admin-types";
+import { useToast } from "@/components/Toast";
 import CameraDrive from "@/components/admin/CameraDrive";
 import RaceControl from "@/components/admin/RaceControl";
 import BleCarPanel from "@/components/admin/BleCarPanel";
@@ -22,6 +23,8 @@ const STATE_STYLES: Record<string, string> = {
 };
 
 export default function AdminPage() {
+  const toast = useToast();
+
   // ── State ────────────────────────────────────────────────────────────────────
   const [cycle, setCycle] = useState<Cycle | null>(null);
   const [voteTotals, setVoteTotals] = useState<VoteTotals>({});
@@ -200,18 +203,30 @@ export default function AdminPage() {
     try {
       const res = await fetch("/api/race/start", { method: "POST" });
       const data = await res.json();
-      if (!res.ok) alert(data.error || "Failed to start race");
-      else await pollAll();
-    } catch (e) { alert("Start race failed"); }
+      if (!res.ok) {
+        toast({ variant: "error", title: "Failed to start race", message: data.error || "Unknown error" });
+      } else {
+        toast({ variant: "success", title: "Race started", message: `Countdown beginning · race ${data.cycle?.raceId ?? ""}` });
+        await pollAll();
+      }
+    } catch (e) {
+      toast({ variant: "error", title: "Failed to start race", message: "Network error — check console" });
+    }
   };
 
   const resetRace = async () => {
     try {
       const res = await fetch("/api/admin/reset-race", { method: "POST" });
       const data = await res.json();
-      if (!res.ok) alert(data.error || "Failed to reset");
-      else await pollAll();
-    } catch (e) { alert("Reset failed"); }
+      if (!res.ok) {
+        toast({ variant: "error", title: "Failed to reset", message: data.error || "Unknown error" });
+      } else {
+        toast({ variant: "success", title: "Race reset", message: `Fresh idle cycle ready · race ${data.cycle?.raceId ?? ""}` });
+        await pollAll();
+      }
+    } catch (e) {
+      toast({ variant: "error", title: "Failed to reset", message: "Network error — check console" });
+    }
   };
 
   const initRace = async () => {
@@ -222,9 +237,15 @@ export default function AdminPage() {
     try {
       const res = await fetch("/api/admin/reset-race", { method: "POST" });
       const data = await res.json();
-      if (!res.ok) alert(data.error || "Failed to initialize race");
-      else await pollAll();
-    } catch (e) { alert("Initialize failed"); }
+      if (!res.ok) {
+        toast({ variant: "error", title: "Failed to initialize", message: data.error || "Unknown error" });
+      } else {
+        toast({ variant: "success", title: "Race initialized", message: `Race ${data.cycle?.raceId ?? ""} is open for betting.` });
+        await pollAll();
+      }
+    } catch (e) {
+      toast({ variant: "error", title: "Failed to initialize", message: "Network error — check console" });
+    }
   };
 
   const submitResult = async (winnerCarId: string | null, status: RaceResultStatus) => {
@@ -242,11 +263,21 @@ export default function AdminPage() {
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (!res.ok) alert(data.error || "Failed to submit result");
-      else alert(`Race result submitted. ${data.result?.settlement
-        ? `Won: ${data.result.settlement.wonCount}, Lost: ${data.result.settlement.lostCount}, Refunded: ${data.result.settlement.refundedCount}`
-        : ""}`);
-    } catch (e) { alert("Submit failed"); }
+      if (!res.ok) {
+        toast({ variant: "error", title: "Failed to submit result", message: data.error || "Unknown error" });
+      } else {
+        const s = data.result?.settlement;
+        toast({
+          variant: "success",
+          title: "Result submitted",
+          message: s
+            ? `Won: ${s.wonCount} · Lost: ${s.lostCount} · Refunded: ${s.refundedCount}`
+            : "Race settled.",
+        });
+      }
+    } catch (e) {
+      toast({ variant: "error", title: "Failed to submit result", message: "Network error — check console" });
+    }
   };
 
   const scan = async () => {
@@ -268,9 +299,16 @@ export default function AdminPage() {
         body: JSON.stringify({ address, name }),
       });
       const data = await res.json();
-      if (!res.ok || !data.connected) alert(data.error || "Connect failed");
-      else { await pollAll(); pollKnownCars(); }
-    } catch (e) { alert("Connect failed"); }
+      if (!res.ok || !data.connected) {
+        toast({ variant: "error", title: "Car connect failed", message: data.error || "Unknown error" });
+      } else {
+        toast({ variant: "success", title: "Car connected", message: name });
+        await pollAll();
+        pollKnownCars();
+      }
+    } catch (e) {
+      toast({ variant: "error", title: "Car connect failed", message: "Network error — check console" });
+    }
   };
 
   const disconnectCar = async () => {
