@@ -8,13 +8,14 @@ import type { RaceResultStatus } from "@/lib/admin-types";
 interface RaceControlProps {
   cycle: Cycle | null;
   countdown: number;
+  onInitRace: () => Promise<void>;
   onStartRace: () => Promise<void>;
   onResetRace: () => Promise<void>;
   onSubmitResult: (winnerCarId: string | null, status: RaceResultStatus) => Promise<void>;
 }
 
 export default function RaceControl({
-  cycle, countdown, onStartRace, onResetRace, onSubmitResult,
+  cycle, countdown, onInitRace, onStartRace, onResetRace, onSubmitResult,
 }: RaceControlProps) {
   const [working, setWorking] = useState<string | null>(null);
   const [winnerCarId, setWinnerCarId] = useState<string>("Car 1");
@@ -22,6 +23,10 @@ export default function RaceControl({
 
   const state = cycle?.state ?? "idle";
   const isIdle = state === "idle";
+  // Race is "underway" (countdown started or beyond) — only then can a result
+  // be submitted. In pure idle, there's nothing to settle yet.
+  const isUnderway = state === "starting" || state === "voting" ||
+                     state === "finalizing" || state === "boost";
 
   const wrap = async (key: string, fn: () => Promise<void>) => {
     setWorking(key);
@@ -42,12 +47,21 @@ export default function RaceControl({
           {cycle && <> · race <span className="text-[#aaa]">{cycle.raceId}</span> · cycle <span className="text-[#aaa]">{cycle.cycleNumber}</span></>}
         </div>
 
-        {/* Start + Reset buttons */}
+        {/* Init + Start + Reset buttons */}
         <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => wrap("init", onInitRace)}
+            disabled={working === "init"}
+            className="text-[11px] tracking-widest px-3 py-1.5 border border-[#446644] text-[#88dd88] hover:bg-[#44aa44]/10 transition-colors disabled:opacity-30"
+            title="Create a fresh idle race (admins can do this any time; users can then place bets)"
+          >
+            {working === "init" ? "INITIALIZING…" : "INITIALIZE RACE"}
+          </button>
           <button
             onClick={() => wrap("start", onStartRace)}
             disabled={!isIdle || working === "start"}
             className="text-[11px] tracking-widest px-3 py-1.5 btn-accent"
+            title={isIdle ? "Begin the race countdown" : "Race already running"}
           >
             {working === "start" ? "STARTING…" : "FORCE START RACE"}
           </button>
@@ -103,10 +117,15 @@ export default function RaceControl({
               if (!confirm(msg + " This will settle all confirmed bets.")) return;
               wrap("submit", () => onSubmitResult(winner, resultStatus));
             }}
-            disabled={working === "submit"}
-            className="w-full text-[11px] tracking-widest px-3 py-1.5 btn-accent"
+            disabled={!isUnderway || working === "submit"}
+            className="w-full text-[11px] tracking-widest px-3 py-1.5 btn-accent disabled:opacity-30 disabled:cursor-not-allowed"
+            title={isUnderway ? "Settle the race with this result" : "Start the race before submitting a result"}
           >
-            {working === "submit" ? "SUBMITTING…" : "SUBMIT RESULT"}
+            {working === "submit"
+              ? "SUBMITTING…"
+              : !isUnderway
+              ? "RACE NOT STARTED"
+              : "SUBMIT RESULT"}
           </button>
         </div>
       </div>

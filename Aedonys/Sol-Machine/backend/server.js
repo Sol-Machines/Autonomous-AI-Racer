@@ -1109,6 +1109,13 @@ function requireAdmin(req, res, next) {
     return next();
   }
 
+  // In DEMO_MODE the deployment is a hackathon demo with no auth surface;
+  // protect via obscurity of the /admin URL only. Real deployments must set
+  // ADMIN_TOKEN and DEMO_MODE=false.
+  if (DEMO_MODE && !ADMIN_TOKEN) {
+    return next();
+  }
+
   const token = req.header("x-admin-token");
 
   if (!token || token !== ADMIN_TOKEN) {
@@ -2167,12 +2174,18 @@ app.post("/api/race/start", (req, res) => {
     Do not allow a race to start unless at least one confirmed bet exists
     for the current race.
 
-    This protects against:
-    - users clicking Start Race before backing a car
+    Bypassed in DEMO_MODE (hackathon demo where betting may be locked) and
+    when an admin token is supplied — the admin force-start flow uses the
+    same endpoint and intentionally short-circuits the bet requirement.
+
+    This still protects against:
     - users calling POST /api/race/start directly from outside the UI
+      (in production, non-demo mode)
     - frontend state getting out of sync
   */
-  if (!raceHasConfirmedBet(cycle.race_id)) {
+  const adminToken = req.header("x-admin-token");
+  const isAdmin = ADMIN_TOKEN && adminToken === ADMIN_TOKEN;
+  if (!DEMO_MODE && !isAdmin && !raceHasConfirmedBet(cycle.race_id)) {
     return res.status(400).json({
       error: "At least one confirmed bet is required before starting the race"
     });
@@ -2955,6 +2968,20 @@ app.post("/api/race/result", requireAdmin, (req, res) => {
 
   if (!raceExists) {
     return res.status(404).json({ error: "Race not found" });
+  }
+
+  // Block submitting results for a race that hasn't been started yet:
+  // a race that is still idle (or has only ever been idle) has no progress
+  // to settle. The race must have been kicked off via /api/race/start first.
+  const hasStarted = db.prepare(`
+    SELECT 1 FROM cycles
+    WHERE race_id = ? AND state != 'idle'
+    LIMIT 1
+  `).get(raceId);
+  if (!hasStarted) {
+    return res.status(400).json({
+      error: "Cannot submit a result — race has not been started yet"
+    });
   }
 
   try {

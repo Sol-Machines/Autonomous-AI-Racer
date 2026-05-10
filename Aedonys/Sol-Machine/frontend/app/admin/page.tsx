@@ -214,6 +214,19 @@ export default function AdminPage() {
     } catch (e) { alert("Reset failed"); }
   };
 
+  const initRace = async () => {
+    // "Initialize" = create a fresh idle race that users can place bets on,
+    // without starting the countdown. Backend-wise this is the same as
+    // reset-race (it just creates a new idle cycle), but the UI label
+    // separates the intent from the destructive "RESET" affordance.
+    try {
+      const res = await fetch("/api/admin/reset-race", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) alert(data.error || "Failed to initialize race");
+      else await pollAll();
+    } catch (e) { alert("Initialize failed"); }
+  };
+
   const submitResult = async (winnerCarId: string | null, status: RaceResultStatus) => {
     if (!cycle) return;
     try {
@@ -362,6 +375,7 @@ export default function AdminPage() {
           <RaceControl
             cycle={cycle}
             countdown={countdown}
+            onInitRace={initRace}
             onStartRace={startRace}
             onResetRace={resetRace}
             onSubmitResult={submitResult}

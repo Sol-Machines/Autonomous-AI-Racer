@@ -32,8 +32,6 @@ export default function HomePage() {
   const [carConnected, setCarConnected] = useState(false);
   const [carName, setCarName] = useState("");
   const [carAddress, setCarAddress] = useState("");
-  const [scanResults, setScanResults] = useState<Set<string>>(new Set());
-  const [isScanning, setIsScanning] = useState(false);
 
   // ── Wallet ───────────────────────────────────────────────────────────────────
   const [demoWallet, setDemoWallet] = useState("");
@@ -184,10 +182,23 @@ export default function HomePage() {
       return;
     }
     try {
-      const resp = await provider.connect();
-      setPhantomAddress(resp.publicKey.toString());
-    } catch (e) {
+      // Make sure any stale session is cleared before reconnecting; Phantom
+      // sometimes throws "Unexpected error" if a previous session is still
+      // half-attached on a refreshed page.
+      try { await provider.disconnect(); } catch (_) {}
+      const resp = await provider.connect({ onlyIfTrusted: false });
+      const pk = resp?.publicKey?.toString?.() ?? provider.publicKey?.toString?.();
+      if (!pk) throw new Error("Phantom did not return a public key");
+      setPhantomAddress(pk);
+    } catch (e: any) {
       console.error("Wallet connect failed", e);
+      const msg = e?.message || e?.toString?.() || "Unknown error";
+      // User rejected the request — quietly ignore.
+      if (e?.code === 4001 || /reject|denied/i.test(msg)) return;
+      alert(
+        "Phantom connect failed: " + msg +
+        "\n\nTry: unlock Phantom, switch network to Devnet, and reload the page."
+      );
     }
   };
 
@@ -302,22 +313,6 @@ export default function HomePage() {
     localStorage.setItem("liveCarId", carId);
   };
 
-  const handleScan = async () => {
-    setIsScanning(true);
-    try {
-      const res = await fetch("/api/car/scan", { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        const found = new Set<string>(
-          (data.cars ?? []).map((c: { name: string }) => c.name)
-        );
-        setScanResults(found);
-      }
-    } catch (_) {} finally {
-      setIsScanning(false);
-    }
-  };
-
   return (
     <div className="flex flex-col h-screen bg-[#080808] text-[#f0f0f0] font-mono overflow-hidden">
       <Header
@@ -331,10 +326,7 @@ export default function HomePage() {
         liveCarId={liveCarId}
         carConnected={carConnected}
         carName={carName}
-        scanResults={scanResults}
-        isScanning={isScanning}
         onLiveCarChange={handleLiveCarChange}
-        onScan={handleScan}
       />
       <div className="flex-1 flex flex-col min-h-0">
         <LiveFeed cycle={cycle} liveCarId={liveCarId} />
