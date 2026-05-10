@@ -47,7 +47,7 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
       )}
 
       {/* Boost overlay */}
-      {isBoost && (
+      {isBoost && winner && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div
             className="boost-banner text-[clamp(28px,8vw,64px)] font-bold tracking-[6px] text-white px-8 py-4"

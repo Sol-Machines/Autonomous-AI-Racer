@@ -365,7 +365,7 @@ export default function HomePage() {
       }
 
       setVotedCycleId(submitData.cycleId);
-      setSelectedCarId(carId);
+      setSelectedCarId(null);
       localStorage.setItem("votedCycleId", String(submitData.cycleId));
       toast({
         variant: "success",

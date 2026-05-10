@@ -5,6 +5,7 @@ import { ToastProvider } from "@/components/Toast";
 export const metadata: Metadata = {
   title: "Sol Machine",
   description: "RC car racing with Solana betting",
+  icons: { icon: "/sol-machine-logo.png" },
 };
 
 export default function RootLayout({
