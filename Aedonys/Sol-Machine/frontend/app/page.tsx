@@ -175,6 +175,7 @@ export default function HomePage() {
       setVotedCycleId(null);
       setVoteTotals({});
       localStorage.removeItem("votedCycleId");
+      setPrevState(null); // prevent re-firing on every poll while state stays idle
     }
   }, [cycle, prevState]);
 
