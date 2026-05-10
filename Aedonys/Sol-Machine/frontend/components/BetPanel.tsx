@@ -1,6 +1,7 @@
 "use client";
 
 import type { Cycle, BetInfo } from "@/lib/types";
+import { BETTING_ENABLED } from "@/lib/flags";
 
 interface BetPanelProps {
   cycle: Cycle | null;
@@ -24,7 +25,9 @@ export default function BetPanel({
   onStakeChange, onPlaceBet, onBoostVote,
 }: BetPanelProps) {
   const state = cycle?.state ?? "idle";
-  const isBettingOpen = state === "idle" || state === "starting";
+  const bettingPhase = state === "idle" || state === "starting";
+  const isBettingOpen = BETTING_ENABLED && bettingPhase;
+  const isAwaitingRace = !BETTING_ENABLED && bettingPhase;
   const isVoting = state === "voting";
   const isBoost = state === "boost";
   const isFinalizing = state === "finalizing";
@@ -64,6 +67,10 @@ export default function BetPanel({
               ))}
             </div>
           </>
+        ) : isAwaitingRace ? (
+          <div className="text-[11px] text-[#888] tracking-widest">
+            ⏳ AWAITING NEXT RACE
+          </div>
         ) : isBoost ? (
           <div className="text-[11px] text-[#ff4400] animate-pulse tracking-widest">
             ⚡ BOOSTING {countdown}s
@@ -92,6 +99,16 @@ export default function BetPanel({
               : selectedCarId
               ? `BACK ${selectedCarId}`
               : "SELECT A CAR"}
+          </button>
+        )}
+
+        {isAwaitingRace && (
+          <button
+            disabled
+            className="text-[11px] px-4 py-1.5 tracking-widest border border-[#2a2a2a] text-[#444] cursor-not-allowed"
+            title="Bets open once the next race is scheduled"
+          >
+            BETS LOCKED
           </button>
         )}
 

@@ -84,10 +84,10 @@ export default function Header({
           className={`text-[11px] px-3 py-1.5 tracking-widest border transition-colors ${
             walletMode === "phantom"
               ? "border-[#44ff44]/60 text-[#44ff44]"
-              : "border-[#ff4400]/60 text-[#ff8800] hover:bg-[#ff4400]/10"
+              : "border-[#ff8800] text-[#ff8800] bg-[#ff4400]/10 hover:bg-[#ff4400]/20 animate-pulse"
           }`}
         >
-          {walletMode === "phantom" ? "● CONNECTED" : "CONNECT WALLET"}
+          {walletMode === "phantom" ? "● CONNECTED" : "CONNECT PHANTOM"}
         </button>
       </div>
     </header>

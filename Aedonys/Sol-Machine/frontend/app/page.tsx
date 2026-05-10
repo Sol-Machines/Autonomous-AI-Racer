@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { CARS, type Cycle, type BetInfo, type VoteTotals } from "@/lib/types";
+import { BETTING_ENABLED } from "@/lib/flags";
 import Header from "@/components/Header";
 import CarBar from "@/components/CarBar";
 import ChatPanel from "@/components/ChatPanel";
@@ -179,7 +180,7 @@ export default function HomePage() {
       (window as any).phantom?.solana ??
       ((window as any).solana?.isPhantom ? (window as any).solana : null);
     if (!provider) {
-      alert("Phantom not found — using demo wallet instead.");
+      alert("Phantom wallet not detected. Install Phantom from https://phantom.app and reload.");
       return;
     }
     try {
@@ -192,6 +193,14 @@ export default function HomePage() {
 
   const placeBet = async () => {
     if (!selectedCarId || !walletAddress || isPlacingBet) return;
+    if (!BETTING_ENABLED) {
+      alert("Betting is closed — no race has been scheduled yet.");
+      return;
+    }
+    if (walletMode !== "phantom") {
+      alert("Connect Phantom to place a bet.");
+      return;
+    }
     setIsPlacingBet(true);
     try {
       const intentRes = await fetch("/api/bet-intent", {
@@ -237,6 +246,14 @@ export default function HomePage() {
   const submitBoostVote = async (carId: string) => {
     if (!walletAddress || cycle?.state !== "voting") return;
     if (votedCycleId === cycle.id || isSubmittingVote) return;
+    if (!BETTING_ENABLED) {
+      alert("Voting is closed — no race has been scheduled yet.");
+      return;
+    }
+    if (walletMode !== "phantom") {
+      alert("Connect Phantom to vote.");
+      return;
+    }
     setIsSubmittingVote(true);
     try {
       const intentRes = await fetch("/api/vote-intent", {
