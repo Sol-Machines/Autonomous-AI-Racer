@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { CARS, type Cycle, type BetInfo, type VoteTotals } from "@/lib/types";
 import { useToast } from "@/components/Toast";
 import Header from "@/components/Header";
@@ -10,6 +10,12 @@ import LiveFeed from "@/components/LiveFeed";
 import CarGrid from "@/components/CarGrid";
 import BetPanel from "@/components/BetPanel";
 import StatusBar from "@/components/StatusBar";
+
+function fetchWithTimeout(url: string, opts: RequestInit = {}, ms = 3000): Promise<Response> {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(id));
+}
 
 function getDemoWallet(): string {
   let w = localStorage.getItem("demoWallet");
@@ -71,11 +77,14 @@ export default function HomePage() {
   }, []);
 
   // ── Polling ───────────────────────────────────────────────────────────────────
+  const cycleInFlight = useRef(false);
+  const carInFlight = useRef(false);
+
   const pollCycle = useCallback(async () => {
+    if (cycleInFlight.current) return;
+    cycleInFlight.current = true;
     try {
-      const res = await fetch(`/api/cycle/current?ts=${Date.now()}`, {
-        cache: "no-store",
-      });
+      const res = await fetchWithTimeout(`/api/cycle/current?ts=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) return;
       const data: Cycle | null = await res.json();
       setCycle((prev) => {
@@ -83,11 +92,12 @@ export default function HomePage() {
         return data;
       });
     } catch (_) {}
+    finally { cycleInFlight.current = false; }
   }, []);
 
   const pollVoteTotals = useCallback(async () => {
     try {
-      const res = await fetch("/api/cycle/result", { cache: "no-store" });
+      const res = await fetchWithTimeout("/api/cycle/result", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       const totals: VoteTotals = {};
@@ -97,8 +107,10 @@ export default function HomePage() {
   }, []);
 
   const pollCarStatus = useCallback(async () => {
+    if (carInFlight.current) return;
+    carInFlight.current = true;
     try {
-      const res = await fetch("/api/car/status", { cache: "no-store" });
+      const res = await fetchWithTimeout("/api/car/status", { cache: "no-store" });
       if (!res.ok) { setCarConnected(false); return; }
       const data = await res.json();
       setCarConnected(data.connected ?? false);
@@ -108,6 +120,7 @@ export default function HomePage() {
     } catch (_) {
       setCarConnected(false);
     }
+    finally { carInFlight.current = false; }
   }, []);
 
   useEffect(() => {
@@ -133,7 +146,7 @@ export default function HomePage() {
   const pollBoostTokens = useCallback(async () => {
     if (!walletAddress || !cycle) { setBoostTokens(null); return; }
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `/api/boost-balance?wallet=${encodeURIComponent(walletAddress)}`,
         { cache: "no-store" }
       );
