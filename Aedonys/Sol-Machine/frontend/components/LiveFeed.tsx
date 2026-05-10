@@ -14,6 +14,11 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
 
   const isBoost = cycle?.state === "boost";
   const isFinalizing = cycle?.state === "finalizing";
+  const isRacing =
+    cycle?.state === "starting" ||
+    cycle?.state === "voting" ||
+    cycle?.state === "boost" ||
+    cycle?.state === "finalizing";
   const winner = cycle?.winnerCarId;
 
   const retry = () => {
@@ -23,7 +28,17 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
 
   return (
     <div className="flex-1 relative bg-black min-h-0 flex items-center justify-center overflow-hidden">
-      {!feedError ? (
+      {isRacing ? (
+        <video
+          key="race-video"
+          src="/race-video.mp4"
+          autoPlay
+          loop
+          muted
+          playsInline
+          className="live-feed-img object-cover"
+        />
+      ) : !feedError ? (
         <img
           key={feedKey}
           src="/api/camera/stream.mjpeg"
@@ -78,10 +93,12 @@ export default function LiveFeed({ cycle, liveCarId }: LiveFeedProps) {
       )}
 
       {/* Live badge on feed */}
-      {!feedError && (
+      {(isRacing || !feedError) && (
         <div className="absolute top-2 left-2 flex items-center gap-1.5 bg-black/70 px-2 py-0.5 pointer-events-none">
           <div className="w-1.5 h-1.5 rounded-full bg-[#ff4400] animate-pulse" />
-          <span className="text-[9px] text-[#ff8800] tracking-widest">LIVE — {liveCarId}</span>
+          <span className="text-[9px] text-[#ff8800] tracking-widest">
+            {isRacing ? `RACE LIVE — ${liveCarId}` : `LIVE — ${liveCarId}`}
+          </span>
         </div>
       )}
     </div>
